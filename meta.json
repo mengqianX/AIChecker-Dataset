@@ -1,0 +1,13 @@
+{
+  "dataset_name": "UIOracleBench",
+  "version": "0.1",
+  "task": "Pairwise UI oracle validation",
+  "num_apps": 10,
+  "num_bugs": 12, 
+  "num_samples": 96,
+  "oracle_types": [
+    "button_color_change"
+  ],
+  "created_by": "manual injection",
+  "intended_use": "Feasibility study of UI oracle detection"
+}
