@@ -1,0 +1,8 @@
+{
+    "type": "button_color_change",
+    "screenshot_a": "../../screens/Android/cainiao/cainiao_button_before.png",
+    "screenshot_b": "../../screens/Android/cainiao/cainiao_button_after.png",
+    "bounds": [286, 2103, 361, 2178],
+    "expected_color": "",
+    "label": "fail"
+}
