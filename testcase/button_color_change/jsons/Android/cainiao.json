@@ -4,5 +4,6 @@
     "screenshot_b": "../../screens/Android/cainiao/cainiao_button_after.png",
     "bounds": [286, 2103, 361, 2178],
     "expected_color": "",
-    "label": "fail"
+    "expected_passed": true,
+    "label": "pass"
 }

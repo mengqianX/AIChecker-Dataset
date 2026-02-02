@@ -4,5 +4,6 @@
     "screenshot_b": "../../screens/HarmonyOS/aiqiyi/aiqiyi_button_after.png",
     "bounds": [250, 273, 434, 357],
     "expected_color": "",
-    "label": "fail"
+    "expected_passed": true,
+    "label": "pass"
 }

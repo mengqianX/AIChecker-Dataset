@@ -4,5 +4,6 @@
     "screenshot_b": "./screens/button_after.png",
     "bounds": [203, 2567, 287, 2651],
     "expected_color": "",
+    "expected_passed": false,
     "label": "fail"
 }

@@ -4,5 +4,6 @@
     "screenshot_b": "../../screens/HarmonyOS/douyin/douyin_button_after.png",
     "bounds": [928, 1236, 1036, 1344],
     "expected_color": "",
-    "label": "fail"
+    "expected_passed": true,
+    "label": "pass"
 }

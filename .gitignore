@@ -1,0 +1,53 @@
+# 数据集仓库的 .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.log
+*.bak
+
+# 大文件和二进制文件
+*.hap
+*.apk
+*.ipa
+# *.png
+# *.jpg
+# *.jpeg
+*.gif
+*.webp
+
+# 测试文件（测试用的图片和二进制文件）
+AIChecker/tests/screens/
+AIChecker/tests/jsons/
+
+# 文档目录（不提交）
+AIChecker/docs/
+docs/
+
+# 调试输出目录
+AIChecker/debug/
+debug/

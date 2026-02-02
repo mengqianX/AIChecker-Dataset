@@ -1,0 +1,6 @@
+{
+  "screenshot_a": "./tests/screens/button_before.png",
+  "screenshot_b": "./tests/screens/button_after.png",
+  "bounds": [203, 2567, 287, 2651],
+  "expected_color": "0,125,255"
+}

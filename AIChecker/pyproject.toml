@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aichecker"
+version = "0.1.0"
+description = "AI-based UI checker for HarmonyOS apps"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "xmq", email = "dev@example.com" }]
+# 这里填你项目真正依赖的库（示例）
+dependencies = [
+    "Pillow>=9.0.0",
+
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[project.urls]
+Homepage = "https://example.com/aichecker"
+Repository = "https://example.com/aichecker"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aichecker", "aichecker.*"]
