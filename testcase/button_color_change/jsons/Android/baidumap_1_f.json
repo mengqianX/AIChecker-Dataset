@@ -1,0 +1,9 @@
+{
+    "type": "button_color_change",
+    "screenshot_a": "../../screens/Android/baidumap/baidumap_1_before.png",
+    "screenshot_b": "../../screens/Android/baidumap/baidumap_1_before.png",
+    "bounds": [264, 2073, 384, 2193],
+    "expected_color": "",
+    "expected_passed": false,
+    "label": "fail"
+}

@@ -1,9 +1,0 @@
-{
-    "type": "button_color_change",
-    "screenshot_a": "../../screens/HarmonyOS/feishu/feishu_button_before.png",
-    "screenshot_b": "../../screens/HarmonyOS/feishu/feishu_button_after.png",
-    "bounds": [419, 2168, 485, 2234],
-    "expected_color": "",
-    "expected_passed": true,
-    "label": "pass"
-}

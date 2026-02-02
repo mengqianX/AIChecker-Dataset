@@ -1,9 +1,0 @@
-{
-    "type": "button_color_change",
-    "screenshot_a": "../../screens/Android/qqmusic/qqmusic_button_before.png",
-    "screenshot_b": "../../screens/Android/qqmusic/qqmusic_button_after.png",
-    "bounds": [702, 1936, 792, 2026],
-    "expected_color": "",
-    "expected_passed": true,
-    "label": "pass"
-}

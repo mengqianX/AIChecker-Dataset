@@ -1,0 +1,9 @@
+{
+    "type": "button_color_change",
+    "screenshot_a": "../../screens/HarmonyOS/bilibili/bilibili_1_before.png",
+    "screenshot_b": "../../screens/HarmonyOS/bilibili/bilibili_1_after.jpg",
+    "bounds": [637, 566, 1048, 656],
+    "expected_color": "",
+    "expected_passed": true,
+    "label": "pass"
+}

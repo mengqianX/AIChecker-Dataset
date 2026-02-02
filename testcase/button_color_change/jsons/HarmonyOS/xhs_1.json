@@ -1,7 +1,7 @@
 {
     "type": "button_color_change",
-    "screenshot_a": "../../screens/HarmonyOS/xhs/xhs_button_before.png",
-    "screenshot_b": "../../screens/HarmonyOS/xhs/xhs_button_after.png",
+    "screenshot_a": "../../screens/HarmonyOS/xhs/xhs_1_before.png",
+    "screenshot_b": "../../screens/HarmonyOS/xhs/xhs_1_after.png",
     "bounds": [656, 2199, 746, 2289],
     "expected_color": "",
     "expected_passed": true,

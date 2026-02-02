@@ -108,7 +108,11 @@ def button_base_color(
 
     # 降采样以加速，并减少细碎噪声影响
     center = center.resize((sample_size, sample_size))
-    pixels: Iterable[Tuple[int, int, int]] = list(center.getdata())
+    # Pillow 14 deprecates getdata; prefer get_flattened_data when available.
+    if hasattr(center, "get_flattened_data"):
+        pixels: Iterable[Tuple[int, int, int]] = list(center.get_flattened_data())
+    else:
+        pixels = list(center.getdata())
 
     def is_not_too_bright(rgb: Tuple[int, int, int]) -> bool:
         rr, gg, bb = rgb

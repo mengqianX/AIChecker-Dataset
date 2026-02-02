@@ -1,0 +1,9 @@
+{
+    "type": "button_color_change",
+    "screenshot_a": "../../screens/Android/jingdong/jingdong_1_before.png",
+    "screenshot_b": "../../screens/Android/jingdong/jingdong_1_after.png",
+    "bounds": [942, 741, 1050, 804],
+    "expected_color": "",
+    "expected_passed": true,
+    "label": "pass"
+}
