@@ -1,0 +1,14 @@
+{
+    "type": "button_color_change",
+    "screenshot_a": "../../screens/Android/taobao/taobao_1_before.png",
+    "screenshot_b": "../../screens/Android/taobao/taobao_1_before.png",
+    "bounds": [
+        60,
+        814,
+        108,
+        862
+    ],
+    "expected_color": "",
+    "expected_passed": false,
+    "label": "fail"
+}

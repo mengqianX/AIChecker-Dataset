@@ -1,0 +1,14 @@
+{
+    "type": "button_color_change",
+    "screenshot_a": "../../screens/Android/zhifubao/zhifubao_1_before.png",
+    "screenshot_b": "../../screens/Android/zhifubao/zhifubao_1_before.png",
+    "bounds": [
+        360,
+        264,
+        720,
+        384
+    ],
+    "expected_color": "",
+    "expected_passed": false,
+    "label": "fail"
+}
