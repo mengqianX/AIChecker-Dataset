@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    849,
+    348,
+    1032,
+    447
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/Android/niuke/niuke_1_before.png",
+  "screenshot_b": "../../screens/Android/niuke/niuke_1_after.png",
+  "expected_passed": true
+}

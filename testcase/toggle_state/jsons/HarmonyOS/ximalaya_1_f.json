@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    913,
+    746,
+    1021,
+    806
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/HarmonyOS/ximalaya/ximalaya_1_before.png",
+  "screenshot_b": "../../screens/HarmonyOS/ximalaya/ximalaya_1_before.png",
+  "expected_passed": false
+}

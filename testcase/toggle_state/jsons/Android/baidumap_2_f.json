@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    865,
+    933,
+    1021,
+    1032
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/Android/baidumap/baidumap_2_before.png",
+  "screenshot_b": "../../screens/Android/baidumap/baidumap_2_before.png",
+  "expected_passed": false
+}

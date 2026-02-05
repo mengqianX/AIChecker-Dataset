@@ -1,0 +1,8 @@
+{
+  "type": "toggle_state",
+  "bounds": [80, 300, 200, 360],
+  "expected": true,
+  "screenshot_a": "../images/Android/AppB_before.png",
+  "screenshot_b": "../images/Android/AppB_after.png",
+  "expected_passed": true
+}

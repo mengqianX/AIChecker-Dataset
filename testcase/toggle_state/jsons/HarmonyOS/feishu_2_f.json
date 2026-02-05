@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    874,
+    677,
+    982,
+    737
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/HarmonyOS/feishu/feishu_2_before.png",
+  "screenshot_b": "../../screens/HarmonyOS/feishu/feishu_2_before.png",
+  "expected_passed": false
+}

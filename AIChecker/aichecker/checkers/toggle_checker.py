@@ -12,7 +12,7 @@ from ..utils import load_image
 from .detectors import check_toggle_cv, check_toggle_uitree
 
 
-_TOGGLE_KEYWORDS = ("toggle",)
+_TOGGLE_KEYWORDS = ("toggle", "switch", "checkbox")
 
 
 def _find_node_by_bounds(ui_tree: Dict[str, Any], bounds: Bounds) -> Optional[Dict[str, Any]]:
@@ -71,9 +71,10 @@ def _coerce_expected_value(raw: Any) -> bool:
 def _extract_checked_from_attrs(attrs: Dict[str, Any]) -> Optional[bool]:
     candidates = [
         attrs.get("checked"),
-        # attrs.get("isChecked"),
-        # (attrs.get("state") or {}).get("checked"),
-        # (attrs.get("accessibility") or {}).get("checked"),
+        attrs.get("isChecked"),
+        attrs.get("selected"),
+        (attrs.get("state") or {}).get("checked"),
+        (attrs.get("accessibility") or {}).get("checked"),
     ]
     for raw in candidates:
         checked = _coerce_checked_value(raw)

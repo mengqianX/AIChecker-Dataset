@@ -13,6 +13,7 @@ authors = [{ name = "xmq", email = "dev@example.com" }]
 # 这里填你项目真正依赖的库（示例）
 dependencies = [
     "Pillow>=9.0.0",
+    "opencv-python>=4.8.0",
 
 ]
 
