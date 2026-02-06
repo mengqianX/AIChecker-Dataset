@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    900,
+    1104,
+    1005,
+    1167
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/Android/tieba/tieba_1_before.png",
+  "screenshot_b": "../../../screens/Android/tieba/tieba_1_before.png",
+  "expected_passed": false
+}

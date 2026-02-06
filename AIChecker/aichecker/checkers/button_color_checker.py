@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+import numpy as np
 from ..models import Bounds, CheckResult, ControlInfo
 from ..utils import button_base_color, dominant_button_color, dominant_color, load_image, mean_color, parse_color
 from PIL import Image
@@ -87,17 +88,48 @@ def check_button_color(
         if before_color is None:
             raise ValueError("expected_color=None but no screenshot_a provided for comparison.")
         
-        # Compare before vs after
-        channel_diff = tuple(abs(dom_color[i] - before_color[i]) for i in range(3))
-        max_diff = max(channel_diff)
-        distance = sum(d * d for d in channel_diff) ** 0.5
+        # Compare before vs after (multi-signal)
+        dom_before = dominant_button_color(crop_before)
+        dom_after = dominant_button_color(crop_after)
+        mean_before = mean_color(crop_before)
+        mean_after = mean_color(crop_after)
 
-        passed = max_diff > tolerance  # True means color changed
+        base_diff = tuple(abs(dom_color[i] - before_color[i]) for i in range(3))
+        dom_diff = tuple(abs(dom_after[i] - dom_before[i]) for i in range(3))
+        mean_diff = tuple(abs(mean_after[i] - mean_before[i]) for i in range(3))
+
+        base_max_diff = max(base_diff)
+        dom_max_diff = max(dom_diff)
+        mean_max_diff = max(mean_diff)
+
+        pixel_threshold = int(payload.get("pixel_threshold") or 10)
+        ratio_threshold = float(payload.get("ratio_threshold") or 0.2)
+
+        before_arr = np.array(crop_before, dtype=np.int16)
+        after_arr = np.array(crop_after, dtype=np.int16)
+        max_per_pixel = np.abs(after_arr - before_arr).max(axis=2)
+        change_ratio = float((max_per_pixel >= pixel_threshold).mean())
+
+        passed = (
+            base_max_diff > tolerance
+            or dom_max_diff > tolerance
+            or mean_max_diff > tolerance
+            or change_ratio >= ratio_threshold
+        )
 
         basis = (
-            f"auto_color_change: before={before_color} after={dom_color} "
-            f"max_diff={max_diff} tolerance={tolerance}"
+            f"auto_color_change: "
+            f"base_max_diff={base_max_diff} "
+            f"dom_max_diff={dom_max_diff} "
+            f"mean_max_diff={mean_max_diff} "
+            f"change_ratio={change_ratio:.3f} "
+            f"tolerance={tolerance} "
+            f"pixel_threshold={pixel_threshold} "
+            f"ratio_threshold={ratio_threshold}"
         )
+        channel_diff = base_diff
+        max_diff = base_max_diff
+        distance = sum(d * d for d in base_diff) ** 0.5
 
     else:
         channel_diff = tuple(abs(dom_color[i] - expected_color[i]) for i in range(3))
@@ -129,5 +161,23 @@ def check_button_color(
         "tolerance": tolerance,
         "crop_size": crop_after.size,
     }
+    if expected_color is None:
+        details.update(
+            {
+                "base_diff": base_diff,
+                "dom_before": dom_before,
+                "dom_after": dom_after,
+                "dom_diff": dom_diff,
+                "mean_before": mean_before,
+                "mean_after": mean_after,
+                "mean_diff": mean_diff,
+                "base_max_diff": base_max_diff,
+                "dom_max_diff": dom_max_diff,
+                "mean_max_diff": mean_max_diff,
+                "pixel_threshold": pixel_threshold,
+                "ratio_threshold": ratio_threshold,
+                "change_ratio": change_ratio,
+            }
+        )
 
     return CheckResult(passed=passed, basis=basis, control_info=control, details=details)

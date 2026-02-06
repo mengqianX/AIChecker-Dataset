@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/tieba/tieba_1_before.png",
+  "screenshot_b": "../../../screens/Android/tieba/tieba_1_before.png",
+  "bounds": [
+    935,
+    2102,
+    1008,
+    2175
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}
