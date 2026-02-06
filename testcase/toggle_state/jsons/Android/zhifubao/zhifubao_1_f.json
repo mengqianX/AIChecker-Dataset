@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    858,
+    393,
+    1011,
+    489
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/Android/zhifubao/zhifubao_1_before.png",
+  "screenshot_b": "../../../screens/Android/zhifubao/zhifubao_1_before.png",
+  "expected_passed": false
+}

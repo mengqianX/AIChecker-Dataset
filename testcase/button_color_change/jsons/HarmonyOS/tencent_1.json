@@ -1,9 +1,0 @@
-{
-    "type": "button_color_change",
-    "screenshot_a": "../../screens/HarmonyOS/tencent/tencent_1_before.png",
-    "screenshot_b": "../../screens/HarmonyOS/tencent/tencent_1_after.png",
-    "bounds": [834, 1002, 990, 1098],
-    "expected_color": "",
-    "expected_passed": true,
-    "label": "pass"
-}

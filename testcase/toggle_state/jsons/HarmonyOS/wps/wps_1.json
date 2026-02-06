@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    891,
+    325,
+    999,
+    385
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/HarmonyOS/wps/wps_1_before.png",
+  "screenshot_b": "../../../screens/HarmonyOS/wps/wps_1_after.png",
+  "expected_passed": true
+}

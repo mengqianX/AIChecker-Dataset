@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    884,
+    806,
+    1037,
+    899
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/HarmonyOS/kuaishou/kuaishou_1_before.png",
+  "screenshot_b": "../../../screens/HarmonyOS/kuaishou/kuaishou_1_before.png",
+  "expected_passed": false
+}

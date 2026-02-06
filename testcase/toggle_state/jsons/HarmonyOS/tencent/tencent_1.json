@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    834,
+    1002,
+    990,
+    1098
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/HarmonyOS/tencent/tencent_1_before.png",
+  "screenshot_b": "../../../screens/HarmonyOS/tencent/tencent_1_after.png",
+  "expected_passed": true
+}

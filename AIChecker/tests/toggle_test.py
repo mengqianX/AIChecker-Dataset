@@ -34,7 +34,7 @@ def _collect_testcase_jsons():
         dir_path = JSONS_DIR / subdir
         if not dir_path.is_dir():
             continue
-        for j in dir_path.glob("*.json"):
+        for j in dir_path.rglob("*.json"):
             if "sample" in j.stem.lower():
                 continue
             cases.append((subdir, j.stem, j))

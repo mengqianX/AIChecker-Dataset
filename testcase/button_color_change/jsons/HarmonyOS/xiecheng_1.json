@@ -1,9 +1,0 @@
-{
-    "type": "button_color_change",
-    "screenshot_a": "../../screens/HarmonyOS/xiecheng/xiecheng_1_before.png",
-    "screenshot_b": "../../screens/HarmonyOS/xiecheng/xiecheng_1_after.png",
-    "bounds": [889, 675, 1033, 765],
-    "expected_color": "",
-    "expected_passed": true,
-    "label": "pass"
-}

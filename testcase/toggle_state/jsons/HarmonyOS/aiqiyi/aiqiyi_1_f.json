@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    865,
+    344,
+    1018,
+    437
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/HarmonyOS/aiqiyi/aiqiyi_1_before.png",
+  "screenshot_b": "../../../screens/HarmonyOS/aiqiyi/aiqiyi_1_before.png",
+  "expected_passed": false
+}

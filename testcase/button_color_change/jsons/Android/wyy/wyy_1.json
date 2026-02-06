@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/wyy/wyy_1_before.png",
+  "screenshot_b": "../../../screens/Android/wyy/wyy_1_after.png",
+  "bounds": [
+    834,
+    829,
+    990,
+    925
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

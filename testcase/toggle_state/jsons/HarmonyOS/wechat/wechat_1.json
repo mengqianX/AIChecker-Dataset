@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    883,
+    276,
+    1036,
+    369
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/HarmonyOS/wechat/wechat_1_before.png",
+  "screenshot_b": "../../../screens/HarmonyOS/wechat/wechat_1_after.png",
+  "expected_passed": true
+}

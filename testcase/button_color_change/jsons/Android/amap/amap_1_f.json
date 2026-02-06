@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/amap/amap_1_before.png",
+  "screenshot_b": "../../../screens/Android/amap/amap_1_before.png",
+  "bounds": [
+    393,
+    525,
+    492,
+    585
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}
