@@ -126,7 +126,12 @@ def check_toggle_cv(
 
 
     gray_after = ImageOps.autocontrast(crop_after.convert("L"))
+    gray_before = ImageOps.autocontrast(crop_before.convert("L"))
     left_b, right_b = _half_brightness(gray_after)
+    left_b_before, right_b_before = _half_brightness(gray_before)
+    lr_after = right_b - left_b
+    lr_before = right_b_before - left_b_before
+    delta_lr = lr_after - lr_before
 
     # 饱和度变化
     if abs(delta_sat) >= SAT_DELTA_THRESHOLD:
@@ -142,7 +147,11 @@ def check_toggle_cv(
         elif knob_ratio_after < 0.45:
             inferred_on = False
         else:
-            inferred_on = (right_b - left_b) > 6
+            # Centered knob is ambiguous; only trust a *change* in left/right contrast.
+            if abs(delta_lr) > 6:
+                inferred_on = delta_lr > 0
+            else:
+                inferred_on = False
     
     inferred_on = bool(inferred_on)
 
@@ -158,6 +167,9 @@ def check_toggle_cv(
         "knob_ratio_before": knob_ratio_before,
         "left_brightness": left_b,
         "right_brightness": right_b,
+        "left_brightness_before": left_b_before,
+        "right_brightness_before": right_b_before,
+        "delta_left_right": delta_lr,
         "dominant_color_after": dom_after,
     }
 

@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    892,
+    1683,
+    1016,
+    1827
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/Android/google/google_1_before.png",
+  "screenshot_b": "../../../screens/Android/google/google_1_after.png",
+  "expected_passed": true
+}
