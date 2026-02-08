@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/qqemail/qqemail_2_before.png",
+  "screenshot_b": "../../../screens/Android/qqemail/qqemail_2_before.png",
+  "bounds": [
+    467,
+    307,
+    515,
+    355
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

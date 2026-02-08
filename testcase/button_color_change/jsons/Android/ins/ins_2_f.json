@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/ins/ins_2_before.png",
+  "screenshot_b": "../../../screens/Android/ins/ins_2_before.png",
+  "bounds": [
+    420,
+    312,
+    586,
+    408
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

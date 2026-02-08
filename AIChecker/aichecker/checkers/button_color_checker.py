@@ -11,6 +11,8 @@ from PIL import Image
 
 
 DEFAULT_TOLERANCE = 20  # max per-channel delta allowed
+DEFAULT_PIXEL_THRESHOLD = 5
+DEFAULT_RATIO_THRESHOLD = 0.08
 AUTO_COLOR_CHANGE_KEYWORDS = ("auto_color_change", "auto_color_diff", "auto_color")
 
 
@@ -102,8 +104,8 @@ def check_button_color(
         dom_max_diff = max(dom_diff)
         mean_max_diff = max(mean_diff)
 
-        pixel_threshold = int(payload.get("pixel_threshold") or 10)
-        ratio_threshold = float(payload.get("ratio_threshold") or 0.2)
+        pixel_threshold = int(payload.get("pixel_threshold") or DEFAULT_PIXEL_THRESHOLD)
+        ratio_threshold = float(payload.get("ratio_threshold") or DEFAULT_RATIO_THRESHOLD)
 
         before_arr = np.array(crop_before, dtype=np.int16)
         after_arr = np.array(crop_after, dtype=np.int16)

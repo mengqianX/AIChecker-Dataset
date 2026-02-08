@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/niuke/niuke_2_before.png",
+  "screenshot_b": "../../../screens/Android/niuke/niuke_2_before.png",
+  "bounds": [
+    66,
+    2098,
+    150,
+    2182
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

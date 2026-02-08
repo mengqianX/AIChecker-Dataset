@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/zhihu/zhihu_2_before.png",
+  "screenshot_b": "../../../screens/Android/zhihu/zhihu_2_after.png",
+  "bounds": [
+    66,
+    2094,
+    150,
+    2178
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}
