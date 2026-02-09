@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/gpt/gpt_2_before.png",
+  "screenshot_b": "../../../screens/Android/gpt/gpt_2_after.png",
+  "bounds": [
+    72,
+    684,
+    538,
+    828
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/meituan/meituan_2_before.png",
+  "screenshot_b": "../../../screens/Android/meituan/meituan_2_before.png",
+  "bounds": [
+    33,
+    360,
+    381,
+    453
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

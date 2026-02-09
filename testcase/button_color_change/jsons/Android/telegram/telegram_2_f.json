@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/telegram/telegram_2_before.png",
+  "screenshot_b": "../../../screens/Android/telegram/telegram_2_before.png",
+  "bounds": [
+    21,
+    315,
+    412,
+    459
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

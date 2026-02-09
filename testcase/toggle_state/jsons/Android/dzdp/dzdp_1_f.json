@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    882,
+    1189,
+    1035,
+    1282
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/Android/dzdp/dzdp_1_before.png",
+  "screenshot_b": "../../../screens/Android/dzdp/dzdp_1_before.png",
+  "expected_passed": false
+}

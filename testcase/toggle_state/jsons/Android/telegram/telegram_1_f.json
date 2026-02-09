@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    903,
+    1903,
+    1014,
+    1963
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/Android/telegram/telegram_1_before.png",
+  "screenshot_b": "../../../screens/Android/telegram/telegram_1_before.png",
+  "expected_passed": false
+}

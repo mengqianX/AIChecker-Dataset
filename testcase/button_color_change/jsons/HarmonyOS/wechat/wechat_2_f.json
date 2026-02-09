@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/HarmonyOS/wechat/wechat_2_before.png",
+  "screenshot_b": "../../../screens/HarmonyOS/wechat/wechat_2_before.png",
+  "bounds": [
+    365,
+    2179,
+    449,
+    2263
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

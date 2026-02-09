@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    870,
+    565,
+    984,
+    637
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/Android/gmail/gmail_1_before.png",
+  "screenshot_b": "../../../screens/Android/gmail/gmail_1_after.png",
+  "expected_passed": true
+}

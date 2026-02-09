@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/qwen/qwen_1_before.png",
+  "screenshot_b": "../../../screens/Android/qwen/qwen_1_before.png",
+  "bounds": [
+    859,
+    513,
+    979,
+    573
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

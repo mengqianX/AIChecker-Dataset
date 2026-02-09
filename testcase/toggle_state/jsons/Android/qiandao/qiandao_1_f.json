@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    880,
+    1997,
+    1020,
+    2078
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/Android/qiandao/qiandao_1_before.png",
+  "screenshot_b": "../../../screens/Android/qiandao/qiandao_1_before.png",
+  "expected_passed": false
+}

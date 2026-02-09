@@ -136,11 +136,11 @@ def check_toggle_cv(
     # 饱和度变化
     if abs(delta_sat) >= SAT_DELTA_THRESHOLD:
         inferred_on = delta_sat > 0
-    elif sat_after <= SAT_OFF:
-        inferred_on = False
     # 滑块位移
     elif abs(delta_knob) >= KNOB_DELTA_THRESHOLD:
         inferred_on = delta_knob > 0
+    elif sat_after <= SAT_OFF:
+        inferred_on = False
     else:
         if knob_ratio_after > 0.55:
             inferred_on = True

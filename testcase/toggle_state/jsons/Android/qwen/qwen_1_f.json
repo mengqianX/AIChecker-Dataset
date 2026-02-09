@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    859,
+    513,
+    979,
+    573
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/Android/qwen/qwen_1_before.png",
+  "screenshot_b": "../../../screens/Android/qwen/qwen_1_before.png",
+  "expected_passed": false
+}

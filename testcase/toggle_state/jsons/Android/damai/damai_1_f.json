@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    903,
+    325,
+    1032,
+    403
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/Android/damai/damai_1_before.png",
+  "screenshot_b": "../../../screens/Android/damai/damai_1_before.png",
+  "expected_passed": false
+}

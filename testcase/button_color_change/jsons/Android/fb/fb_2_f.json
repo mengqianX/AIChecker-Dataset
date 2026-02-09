@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/Android/fb/fb_2_before.png",
+  "screenshot_b": "../../../screens/Android/fb/fb_2_before.png",
+  "bounds": [
+    360,
+    120,
+    540,
+    252
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

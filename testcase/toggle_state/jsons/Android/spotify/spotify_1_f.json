@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    876,
+    522,
+    1032,
+    618
+  ],
+  "expected": true,
+  "screenshot_a": "../../../screens/Android/spotify/spotify_1_before.png",
+  "screenshot_b": "../../../screens/Android/spotify/spotify_1_before.png",
+  "expected_passed": false
+}

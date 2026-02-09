@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../../screens/HarmonyOS/tomato/tomato_2_before.png",
+  "screenshot_b": "../../../screens/HarmonyOS/tomato/tomato_2_after.png",
+  "bounds": [
+    60,
+    2179,
+    156,
+    2275
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}
