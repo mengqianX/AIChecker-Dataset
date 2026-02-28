@@ -1,0 +1,9 @@
+{
+    "type": "count_change",
+    "screenshot_a": "./testcase/button_color_change/screens/sample/before.png",
+    "screenshot_b": "./testcase/button_color_change/screens/sample/after.png",
+    "bounds": [100, 200, 300, 400],
+    "api_key": "",
+    "model": "qwen-vl-max",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+}

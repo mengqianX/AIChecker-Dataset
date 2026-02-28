@@ -14,7 +14,7 @@ authors = [{ name = "xmq", email = "dev@example.com" }]
 dependencies = [
     "Pillow>=9.0.0",
     "opencv-python>=4.8.0",
-
+    "openai>=1.0.0",  # OpenAI SDK（用于调用通义千问多模态API）
 ]
 
 [project.optional-dependencies]
