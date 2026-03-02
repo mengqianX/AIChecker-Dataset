@@ -27,7 +27,7 @@ def _resolve_path(json_path: Path, rel_path: str) -> Path:
 def _load_and_resolve_payload(json_path: Path) -> dict:
     """加载 JSON 并解析其中的 template_image、target_image 或 image_a、image_b 路径。"""
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    for key in ("template_image", "target_image", "image_a", "image_b"):
+    for key in ("template_image", "target_image"):
         if data.get(key):
             data[key] = str(_resolve_path(json_path, data[key]))
     return data
@@ -159,7 +159,7 @@ def test_image_match_from_testcase(platform: str, app_name: str, json_path: Path
     debug_dir = REPO_ROOT / "AIChecker" / "debug" / "image_match" / f"{platform}_{app_name}"
     
     try:
-        result = check_image_match(payload, debug_dir=debug_dir)
+        result = check_image_match(payload, output=debug_dir)
     except ImportError as e:
         # ImportError（如缺少cv2包）应该跳过，这是环境配置问题
         pytest.skip(
@@ -227,7 +227,7 @@ def test_sample_image_match():
         expected_bounds = None
     
     if template_image and target_image and Path(template_image).exists() and Path(target_image).exists():
-        result = check_image_match(payload, debug_dir=REPO_ROOT / "AIChecker" / "debug" / "image_match" / "sample")
+        result = check_image_match(payload, output=REPO_ROOT / "AIChecker" / "debug" / "image_match" / "sample")
         print(json.dumps(result, default=_encode, ensure_ascii=False, indent=2))
         assert result.passed is payload.get("expected_passed")
         print(f"\n检测结果: {'✅ 找到匹配' if result.passed else '❌ 未找到匹配'}")

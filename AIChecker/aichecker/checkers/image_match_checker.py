@@ -152,7 +152,7 @@ def _multi_scale_template_match(
 
 def check_image_match(
     payload: Dict[str, Any],
-    debug_dir: Path | None = None,
+    output: Path | None = None,
 ) -> CheckResult:
     """
     在目标图片中查找模板图片，支持多尺度匹配以适应不同分辨率。
@@ -167,7 +167,7 @@ def check_image_match(
             - scale_max (可选): 最大缩放比例，默认2.0
             - scale_step (可选): 缩放步长，默认0.1
             - match_method (可选): OpenCV匹配方法，默认cv2.TM_CCOEFF_NORMED
-        debug_dir: 调试输出目录（可选）
+        output: 输出目录（可选）
     
     Returns:
         CheckResult对象，包含：
@@ -275,8 +275,8 @@ def check_image_match(
     }
     
     # 调试输出：红框标出匹配区域，便于直观查看
-    if debug_dir:
-        debug_dir.mkdir(parents=True, exist_ok=True)
+    if output:
+        output.mkdir(parents=True, exist_ok=True)
         target_vis = target_cv.copy()
         box_color = (0, 0, 255)  # BGR 红框，更醒目
         cv2.rectangle(
@@ -295,9 +295,9 @@ def check_image_match(
             box_color,
             2,
         )
-        cv2.imwrite(str(debug_dir / "match_result.png"), target_vis)
-        cv2.imwrite(str(debug_dir / "template.png"), template_cv)
-        cv2.imwrite(str(debug_dir / "target.png"), target_cv)
+        cv2.imwrite(str(output / "match_result.png"), target_vis)
+        cv2.imwrite(str(output / "template.png"), template_cv)
+        cv2.imwrite(str(output / "target.png"), target_cv)
     
     return CheckResult(
         passed=passed,
