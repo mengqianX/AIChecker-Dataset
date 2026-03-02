@@ -53,4 +53,4 @@ AIChecker/debug/
 debug/
 
 # macOS 隐藏文件
-.DS_Store
+*.DS_Store

@@ -174,7 +174,6 @@ def check_image_match(
             - offscale_similarity_margin (可选): 偏离1x时额外相似度裕量，默认0.08
             - offscale_extra_per_unit (可选): 每增加1.0缩放偏移量附加的阈值增量，默认0.25
             - offscale_max_extra (可选): 偏离1x保护的最大附加阈值，默认0.20
-        debug_dir: 调试输出目录（可选）
         output: 输出目录（可选）
     
     Returns:
