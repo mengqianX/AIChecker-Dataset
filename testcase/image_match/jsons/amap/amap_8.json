@@ -1,0 +1,9 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/amap/amap_template_8.png",
+  "target_image": "../../screens/amap/amap_target_8.png",
+  "similarity_threshold": 0.65,
+  "expected_passed": true,
+  "expected_bounds": [0, 1009, 1080, 1254],
+  "bounds_tolerance": 40
+}

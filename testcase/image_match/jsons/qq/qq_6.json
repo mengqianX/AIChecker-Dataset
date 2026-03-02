@@ -1,0 +1,9 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/qq/qq_template_6.png",
+  "target_image": "../../screens/qq/qq_target_6.png",
+  "similarity_threshold": 0.65,
+  "expected_passed": true,
+  "expected_bounds": [43, 1142, 1037, 1806],
+  "bounds_tolerance": 40
+}

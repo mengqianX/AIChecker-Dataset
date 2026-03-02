@@ -1,0 +1,9 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/xhs/xhs_template_8.png",
+  "target_image": "../../screens/xhs/xhs_target_8.png",
+  "similarity_threshold": 0.65,
+  "expected_passed": true,
+  "expected_bounds": [198, 472, 1035, 593],
+  "bounds_tolerance": 40
+}

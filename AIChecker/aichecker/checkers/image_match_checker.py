@@ -167,6 +167,13 @@ def check_image_match(
             - scale_max (可选): 最大缩放比例，默认2.0
             - scale_step (可选): 缩放步长，默认0.1
             - match_method (可选): OpenCV匹配方法，默认cv2.TM_CCOEFF_NORMED
+            - boundary_guard (可选): 是否启用边界缩放保护，默认True
+            - boundary_similarity_margin (可选): 边界缩放额外相似度裕量，默认0.12
+            - offscale_guard (可选): 是否启用偏离1x缩放保护，默认True
+            - offscale_min_deviation (可选): 触发保护的最小缩放偏移量，默认0.15
+            - offscale_similarity_margin (可选): 偏离1x时额外相似度裕量，默认0.08
+            - offscale_extra_per_unit (可选): 每增加1.0缩放偏移量附加的阈值增量，默认0.25
+            - offscale_max_extra (可选): 偏离1x保护的最大附加阈值，默认0.20
         debug_dir: 调试输出目录（可选）
     
     Returns:
@@ -184,6 +191,13 @@ def check_image_match(
     scale_min = float(payload.get("scale_min", DEFAULT_SCALE_MIN))
     scale_max = float(payload.get("scale_max", DEFAULT_SCALE_MAX))
     scale_step = float(payload.get("scale_step", DEFAULT_SCALE_STEP))
+    boundary_guard = bool(payload.get("boundary_guard", True))
+    boundary_similarity_margin = float(payload.get("boundary_similarity_margin", 0.12))
+    offscale_guard = bool(payload.get("offscale_guard", True))
+    offscale_min_deviation = float(payload.get("offscale_min_deviation", 0.15))
+    offscale_similarity_margin = float(payload.get("offscale_similarity_margin", 0.08))
+    offscale_extra_per_unit = float(payload.get("offscale_extra_per_unit", 0.25))
+    offscale_max_extra = float(payload.get("offscale_max_extra", 0.20))
     
     # 解析匹配方法
     match_method_str = payload.get("match_method", "TM_CCOEFF_NORMED")
@@ -208,6 +222,12 @@ def check_image_match(
     if swapped_by_size:
         template_pil, target_pil = target_pil, template_pil
         template_path, target_path = target_path, template_path
+
+    # 计算实际可用缩放范围（与 _multi_scale_template_match 一致）
+    tw, th = template_pil.size
+    gw, gh = target_pil.size
+    effective_scale_min = max(scale_min, 0.1)
+    effective_scale_max = min(scale_max, gw / tw, gh / th)
     
     # 转换为OpenCV格式
     template_cv = _pil_to_cv2(template_pil)
@@ -223,8 +243,42 @@ def check_image_match(
         method=match_method,
     )
     
-    # 判断是否匹配成功
-    passed = similarity >= similarity_threshold
+    # 判断是否匹配成功：先做阈值判定，再做边界缩放保护
+    passed_by_threshold = similarity >= similarity_threshold
+    passed = passed_by_threshold
+    rejection_reason: str | None = None
+    rejection_meta: Dict[str, Any] = {}
+    if passed_by_threshold and boundary_guard and effective_scale_min <= effective_scale_max:
+        # 命中最小/最大缩放边界且相似度仅略高于阈值时，常是误匹配（尤其是极小缩放）
+        scale_eps = max(scale_step / 2.0, 1e-6)
+        at_lower = abs(best_scale - effective_scale_min) <= scale_eps
+        at_upper = abs(best_scale - effective_scale_max) <= scale_eps
+        boundary_threshold = similarity_threshold + boundary_similarity_margin
+        if (at_lower or at_upper) and similarity < boundary_threshold:
+            passed = False
+            rejection_reason = "boundary_scale"
+            rejection_meta = {
+                "position": "lower" if at_lower else "upper",
+                "threshold": boundary_threshold,
+            }
+    if (
+        passed
+        and passed_by_threshold
+        and offscale_guard
+    ):
+        # 非1x缩放下，若仅略高于基础阈值，通常是“形状近似”误匹配
+        scale_deviation = abs(best_scale - 1.0)
+        extra_deviation = max(scale_deviation - offscale_min_deviation, 0.0)
+        dynamic_extra = min(extra_deviation * offscale_extra_per_unit, offscale_max_extra)
+        offscale_threshold = similarity_threshold + offscale_similarity_margin + dynamic_extra
+        if scale_deviation >= offscale_min_deviation and similarity < offscale_threshold:
+            passed = False
+            rejection_reason = "offscale_low_confidence"
+            rejection_meta = {
+                "deviation": scale_deviation,
+                "threshold": offscale_threshold,
+                "dynamic_extra": dynamic_extra,
+            }
     
     # 构建bounds
     bounds = Bounds.from_sequence(bounds_tuple)
@@ -236,11 +290,30 @@ def check_image_match(
             f"(threshold={similarity_threshold:.4f}), bounds={bounds.as_box()}, scale={best_scale:.2f}"
         )
     else:
-        basis = (
-            f"image_match: Template not found in target image. "
-            f"Best similarity={similarity:.4f} < threshold={similarity_threshold:.4f}, "
-            f"best_match_bounds={bounds.as_box()}, scale={best_scale:.2f}"
-        )
+        if rejection_reason == "boundary_scale":
+            basis = (
+                f"image_match: Boundary-scale match rejected. "
+                f"Similarity={similarity:.4f} is below boundary threshold="
+                f"{rejection_meta.get('threshold', (similarity_threshold + boundary_similarity_margin)):.4f} "
+                f"at {rejection_meta.get('position')} scale "
+                f"(base threshold={similarity_threshold:.4f}, scale={best_scale:.2f}), "
+                f"bounds={bounds.as_box()}"
+            )
+        elif rejection_reason == "offscale_low_confidence":
+            basis = (
+                f"image_match: Off-scale low-confidence match rejected. "
+                f"Similarity={similarity:.4f} is below off-scale threshold="
+                f"{rejection_meta.get('threshold', (similarity_threshold + offscale_similarity_margin)):.4f} "
+                f"(base threshold={similarity_threshold:.4f}, scale={best_scale:.2f}, "
+                f"deviation={rejection_meta.get('deviation', abs(best_scale - 1.0)):.2f}), "
+                f"bounds={bounds.as_box()}"
+            )
+        else:
+            basis = (
+                f"image_match: Template not found in target image. "
+                f"Best similarity={similarity:.4f} < threshold={similarity_threshold:.4f}, "
+                f"best_match_bounds={bounds.as_box()}, scale={best_scale:.2f}"
+            )
     
     # 构建ControlInfo
     control_info = ControlInfo(
@@ -267,6 +340,26 @@ def check_image_match(
         "target_size": target_pil.size,
         "match_method": match_method_str,
         "swapped_by_size": swapped_by_size,
+        "passed_by_threshold": passed_by_threshold,
+        "boundary_guard": {
+            "enabled": boundary_guard,
+            "rejected": rejection_reason == "boundary_scale",
+            "position": rejection_meta.get("position"),
+            "similarity_margin": boundary_similarity_margin,
+            "effective_scale_min": effective_scale_min,
+            "effective_scale_max": effective_scale_max,
+        },
+        "offscale_guard": {
+            "enabled": offscale_guard,
+            "rejected": rejection_reason == "offscale_low_confidence",
+            "min_deviation": offscale_min_deviation,
+            "similarity_margin": offscale_similarity_margin,
+            "extra_per_unit": offscale_extra_per_unit,
+            "max_extra": offscale_max_extra,
+            "dynamic_extra": rejection_meta.get("dynamic_extra", 0.0),
+            "scale_deviation": abs(best_scale - 1.0),
+        },
+        "rejection_reason": rejection_reason,
         "scale_range": {
             "min": scale_min,
             "max": scale_max,

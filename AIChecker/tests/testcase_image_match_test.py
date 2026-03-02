@@ -97,20 +97,20 @@ def _bounds_match(
 
 
 def _collect_testcase_jsons():
-    """收集 jsons 目录下 Android/、HarmonyOS/ 中的 JSON（包含 sample.json）。"""
+    """收集 jsons 目录下的 JSON（包含 sample.json，支持 jsons/<app>/*.json 结构）。"""
     cases = []
     # 包含 sample.json
     sample_path = JSONS_DIR / "sample.json"
     if sample_path.exists():
         cases.append(("sample", "sample", sample_path))
-    
-    # 收集子目录中的JSON
-    for subdir in ("Android", "HarmonyOS"):
-        dir_path = JSONS_DIR / subdir
-        if not dir_path.is_dir():
+
+    # 递归收集其余 JSON：
+    # - jsons/<app>/<case>.json -> (app, case, path)
+    for j in sorted(JSONS_DIR.rglob("*.json")):
+        if j == sample_path:
             continue
-        for j in dir_path.glob("*.json"):
-            cases.append((subdir, j.stem, j))
+        rel = j.relative_to(JSONS_DIR)
+        cases.append((rel.parts[0], j.stem, j))
     return cases
 
 
