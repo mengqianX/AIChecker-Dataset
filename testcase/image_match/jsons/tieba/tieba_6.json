@@ -1,0 +1,9 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/tieba/tieba_template_6.png",
+  "target_image": "../../screens/tieba/tieba_target_6.png",
+  "similarity_threshold": 0.65,
+  "expected_passed": true,
+  "expected_bounds": [48, 1010, 1032, 1283],
+  "bounds_tolerance": 40
+}
