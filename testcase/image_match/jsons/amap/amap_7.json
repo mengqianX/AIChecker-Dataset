@@ -2,8 +2,13 @@
   "type": "image_match",
   "template_image": "../../screens/amap/amap_template_7.png",
   "target_image": "../../screens/amap/amap_target_7.png",
-  "similarity_threshold": 0.65,
+  "similarity_threshold": 0.9,
   "expected_passed": true,
-  "expected_bounds": [72, 861, 1080, 1572],
+  "expected_bounds": [
+    72,
+    861,
+    1080,
+    1572
+  ],
   "bounds_tolerance": 40
 }

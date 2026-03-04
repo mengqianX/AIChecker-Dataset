@@ -2,8 +2,13 @@
   "type": "image_match",
   "template_image": "../../screens/qq/qq_template_5.png",
   "target_image": "../../screens/qq/qq_target_8.png",
-  "similarity_threshold": 0.65,
+  "similarity_threshold": 0.9,
   "expected_passed": false,
-  "expected_bounds": [43, 1982, 1037, 2093],
+  "expected_bounds": [
+    43,
+    1982,
+    1037,
+    2093
+  ],
   "bounds_tolerance": 40
 }

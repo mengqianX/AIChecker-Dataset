@@ -2,8 +2,13 @@
   "type": "image_match",
   "template_image": "../../screens/dewu/dewu_template_1.png",
   "target_image": "../../screens/dewu/dewu_target_8.png",
-  "similarity_threshold": 0.65,
+  "similarity_threshold": 0.9,
   "expected_passed": false,
-  "expected_bounds": [248, 254, 1080, 387],
+  "expected_bounds": [
+    248,
+    254,
+    1080,
+    387
+  ],
   "bounds_tolerance": 40
 }

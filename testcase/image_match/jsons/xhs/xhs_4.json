@@ -2,8 +2,13 @@
   "type": "image_match",
   "template_image": "../../screens/xhs/xhs_template_4.png",
   "target_image": "../../screens/xhs/xhs_target_4.png",
-  "similarity_threshold": 0.65,
+  "similarity_threshold": 0.9,
   "expected_passed": true,
-  "expected_bounds": [140, 301, 284, 445],
+  "expected_bounds": [
+    140,
+    301,
+    284,
+    445
+  ],
   "bounds_tolerance": 40
 }

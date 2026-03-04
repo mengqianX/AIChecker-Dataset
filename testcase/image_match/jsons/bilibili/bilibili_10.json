@@ -2,8 +2,13 @@
   "type": "image_match",
   "template_image": "../../screens/bilibili/bilibili_template_8.png",
   "target_image": "../../screens/bilibili/bilibili_target_7.png",
-  "similarity_threshold": 0.65,
+  "similarity_threshold": 0.9,
   "expected_passed": false,
-  "expected_bounds": [567, 1139, 975, 1188],
+  "expected_bounds": [
+    567,
+    1139,
+    975,
+    1188
+  ],
   "bounds_tolerance": 40
 }

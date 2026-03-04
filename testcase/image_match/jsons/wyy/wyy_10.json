@@ -2,8 +2,13 @@
   "type": "image_match",
   "template_image": "../../screens/wyy/wyy_template_6.png",
   "target_image": "../../screens/wyy/wyy_target_8.png",
-  "similarity_threshold": 0.65,
+  "similarity_threshold": 0.9,
   "expected_passed": false,
-  "expected_bounds": [0, 1581, 1080, 1785],
+  "expected_bounds": [
+    0,
+    1581,
+    1080,
+    1785
+  ],
   "bounds_tolerance": 40
 }

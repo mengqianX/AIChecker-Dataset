@@ -1,0 +1,8 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/antennapod/antennapod_template_1.png",
+  "target_image": "../../screens/antennapod/antennapod_target_1.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": false,
+  "bounds_tolerance": 40
+}

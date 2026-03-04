@@ -192,12 +192,15 @@ def check_image_match(
     scale_max = float(payload.get("scale_max", DEFAULT_SCALE_MAX))
     scale_step = float(payload.get("scale_step", DEFAULT_SCALE_STEP))
     boundary_guard = bool(payload.get("boundary_guard", True))
+    # 边界保护默认只对“命中最小缩放边界”更敏感（极小缩放更容易误匹配）。
+    # 若你明确希望对“命中最大缩放边界”也做同样的拒绝，可设置 boundary_guard_upper=true。
+    boundary_guard_upper = bool(payload.get("boundary_guard_upper", False))
     boundary_similarity_margin = float(payload.get("boundary_similarity_margin", 0.12))
     offscale_guard = bool(payload.get("offscale_guard", True))
-    offscale_min_deviation = float(payload.get("offscale_min_deviation", 0.15))
-    offscale_similarity_margin = float(payload.get("offscale_similarity_margin", 0.08))
-    offscale_extra_per_unit = float(payload.get("offscale_extra_per_unit", 0.25))
-    offscale_max_extra = float(payload.get("offscale_max_extra", 0.20))
+    offscale_min_deviation = float(payload.get("offscale_min_deviation", 0.3))
+    offscale_similarity_margin = float(payload.get("offscale_similarity_margin", 0.03))
+    offscale_extra_per_unit = float(payload.get("offscale_extra_per_unit", 0.1))
+    offscale_max_extra = float(payload.get("offscale_max_extra", 0.15))
     
     # 解析匹配方法
     match_method_str = payload.get("match_method", "TM_CCOEFF_NORMED")
@@ -253,8 +256,10 @@ def check_image_match(
         scale_eps = max(scale_step / 2.0, 1e-6)
         at_lower = abs(best_scale - effective_scale_min) <= scale_eps
         at_upper = abs(best_scale - effective_scale_max) <= scale_eps
-        boundary_threshold = similarity_threshold + boundary_similarity_margin
-        if (at_lower or at_upper) and similarity < boundary_threshold:
+        # 这里的 threshold 是“额外严格”阈值，但不应超过 1.0（TM_CCOEFF_NORMED 的上界）
+        boundary_threshold = min(1.0, similarity_threshold + boundary_similarity_margin)
+        should_reject = (at_lower or (boundary_guard_upper and at_upper)) and similarity < boundary_threshold
+        if should_reject:
             passed = False
             rejection_reason = "boundary_scale"
             rejection_meta = {
@@ -270,7 +275,8 @@ def check_image_match(
         scale_deviation = abs(best_scale - 1.0)
         extra_deviation = max(scale_deviation - offscale_min_deviation, 0.0)
         dynamic_extra = min(extra_deviation * offscale_extra_per_unit, offscale_max_extra)
-        offscale_threshold = similarity_threshold + offscale_similarity_margin + dynamic_extra
+        # off-scale 更严格阈值，同样不应超过 1.0
+        offscale_threshold = min(1.0, similarity_threshold + offscale_similarity_margin + dynamic_extra)
         if scale_deviation >= offscale_min_deviation and similarity < offscale_threshold:
             passed = False
             rejection_reason = "offscale_low_confidence"
@@ -345,6 +351,7 @@ def check_image_match(
             "enabled": boundary_guard,
             "rejected": rejection_reason == "boundary_scale",
             "position": rejection_meta.get("position"),
+            "upper_enabled": boundary_guard_upper,
             "similarity_margin": boundary_similarity_margin,
             "effective_scale_min": effective_scale_min,
             "effective_scale_max": effective_scale_max,

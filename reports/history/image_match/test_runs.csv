@@ -1,0 +1,8 @@
+run_id,run_at,branch,commit,note,checker,case_count
+20260303T143639+0000,2026-03-03T14:36:39+00:00,main,4fa68d5,pytest session,image_match,103
+20260303T144309+0000,2026-03-03T14:43:09+00:00,main,4fa68d5,pytest session,image_match,103
+20260303T144523+0000,2026-03-03T14:45:23+00:00,main,4fa68d5,pytest session,image_match,24
+20260303T144709+0000,2026-03-03T14:47:09+00:00,main,4fa68d5,pytest session,image_match,11
+20260303T144801+0000,2026-03-03T14:48:01+00:00,main,4fa68d5,pytest session,image_match,104
+20260303T145535+0000,2026-03-03T14:55:35+00:00,main,4fa68d5,pytest session,image_match,104
+20260303T145626+0000,2026-03-03T14:56:26+00:00,main,4fa68d5,pytest session,image_match,104

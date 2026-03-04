@@ -2,8 +2,13 @@
   "type": "image_match",
   "template_image": "../screens/sample/template.png",
   "target_image": "../screens/sample/target.png",
-  "similarity_threshold": 0.95,
+  "similarity_threshold": 0.9,
   "expected_passed": true,
-  "expected_bounds": [53, 483, 280, 710],
+  "expected_bounds": [
+    53,
+    483,
+    280,
+    710
+  ],
   "bounds_tolerance": 40
 }

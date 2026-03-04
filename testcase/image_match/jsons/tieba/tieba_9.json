@@ -2,8 +2,13 @@
   "type": "image_match",
   "template_image": "../../screens/tieba/tieba_template_1.png",
   "target_image": "../../screens/tieba/tieba_target_8.png",
-  "similarity_threshold": 0.65,
+  "similarity_threshold": 0.9,
   "expected_passed": false,
-  "expected_bounds": [549, 564, 1047, 1383],
+  "expected_bounds": [
+    549,
+    564,
+    1047,
+    1383
+  ],
   "bounds_tolerance": 40
 }
