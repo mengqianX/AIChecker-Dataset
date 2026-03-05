@@ -1,0 +1,14 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/wyy/wyy_template_12.png",
+  "target_image": "../../screens/wyy/wyy_target_12.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": true,
+  "expected_bounds": [
+    24,
+    775,
+    1062,
+    999
+  ],
+  "bounds_tolerance": 40
+}

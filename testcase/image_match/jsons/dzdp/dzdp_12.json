@@ -1,0 +1,14 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/dzdp/dzdp_template_12.png",
+  "target_image": "../../screens/dzdp/dzdp_target_12.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": true,
+  "expected_bounds": [
+    153,
+    142,
+    2244,
+    242
+  ],
+  "bounds_tolerance": 40
+}
