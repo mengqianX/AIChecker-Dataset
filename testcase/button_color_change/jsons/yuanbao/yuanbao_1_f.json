@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/yuanbao/yuanbao_1_before.png",
+  "screenshot_b": "../../screens/yuanbao/yuanbao_1_before.png",
+  "bounds": [
+    858,
+    1713,
+    1020,
+    1857
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

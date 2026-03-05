@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    897,
+    1468,
+    1050,
+    1565
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/pdd/pdd_1_before.png",
+  "screenshot_b": "../../screens/pdd/pdd_1_before.png",
+  "expected_passed": false
+}

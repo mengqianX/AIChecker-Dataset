@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    828,
+    1341,
+    984,
+    1485
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/gpt/gpt_1_before.png",
+  "screenshot_b": "../../screens/gpt/gpt_1_before.png",
+  "expected_passed": false
+}

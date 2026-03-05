@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/niuke/niuke_1_before.png",
+  "screenshot_b": "../../screens/niuke/niuke_1_before.png",
+  "bounds": [
+    849,
+    348,
+    1032,
+    447
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

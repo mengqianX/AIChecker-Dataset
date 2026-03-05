@@ -65,9 +65,7 @@ def test_single_case(json_path: Path):
 
 
 if __name__ == "__main__":
-    for subdir in ("Android", "HarmonyOS"):
-        dir_path = JSONS_DIR / subdir
-        if not dir_path.is_dir():
+    for json_file in sorted(JSONS_DIR.rglob("*.json")):
+        if "sample" in json_file.stem.lower():
             continue
-        for json_file in sorted(dir_path.glob("*.json")):
-            test_single_case(json_file)
+        test_single_case(json_file)

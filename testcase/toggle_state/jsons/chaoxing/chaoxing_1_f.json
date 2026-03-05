@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    915,
+    883,
+    1035,
+    955
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/chaoxing/chaoxing_1_before.png",
+  "screenshot_b": "../../screens/chaoxing/chaoxing_1_before.png",
+  "expected_passed": false
+}

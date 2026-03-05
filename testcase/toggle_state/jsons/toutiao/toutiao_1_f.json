@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    838,
+    1888,
+    958,
+    1960
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/toutiao/toutiao_1_before.png",
+  "screenshot_b": "../../screens/toutiao/toutiao_1_before.png",
+  "expected_passed": false
+}

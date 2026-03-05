@@ -23,32 +23,20 @@
 testcase/
 └── button_color_change/
     ├── jsons/
-    │   ├── Android/
-    │   │   ├── baidumap.json
-    │   │   ├── cainiao.json
-    │   │   ├── qqmusic.json
-    │   │   ├── taobao.json
-    │   │   └── zhifubao.json
-    │   ├── HarmonyOS/
-    │   │   ├── aiqiyi.json
-    │   │   ├── bilibili.json
-    │   │   ├── douyin.json
-    │   │   ├── feishu.json
-    │   │   └── xhs.json
+    │   ├── baidumap/
+    │   │   ├── baidumap_1.json
+    │   │   └── baidumap_1_f.json
+    │   ├── taobao/
+    │   │   ├── taobao_1.json
+    │   │   └── taobao_1_f.json
+    │   ├── xhs/
+    │   │   ├── xhs_1.json
+    │   │   └── xhs_1_f.json
     │   └── sample.json
     └── screens/
-        ├── Android/
-        │   ├── baidumap/
-        │   ├── cainiao/
-        │   ├── qqmusic/
-        │   ├── taobao/
-        │   └── zhifubao/
-        └── HarmonyOS/
-            ├── aiqiyi/
-            ├── bilibili/
-            ├── douyin/
-            ├── feishu/
-            └── xhs/
+        ├── baidumap/
+        ├── taobao/
+        └── xhs/
 ```
 
 - `jsons/`：每个样本的配置文件，描述截图路径、裁剪区域与期望颜色等。

@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    874,
+    717,
+    982,
+    777
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/tomato/tomato_1_before.png",
+  "screenshot_b": "../../screens/tomato/tomato_1_before.png",
+  "expected_passed": false
+}

@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/tencent/tencent_2_before.png",
+  "screenshot_b": "../../screens/tencent/tencent_2_after.png",
+  "bounds": [
+    115,
+    2184,
+    211,
+    2280
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

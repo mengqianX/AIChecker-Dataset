@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    952,
+    489,
+    1048,
+    549
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/bilibili/bilibili_1_before.png",
+  "screenshot_b": "../../screens/bilibili/bilibili_1_before.png",
+  "expected_passed": false
+}

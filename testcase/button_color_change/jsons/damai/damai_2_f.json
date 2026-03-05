@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/damai/damai_2_before.png",
+  "screenshot_b": "../../screens/damai/damai_2_before.png",
+  "bounds": [
+    45,
+    1101,
+    342,
+    1194
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}
