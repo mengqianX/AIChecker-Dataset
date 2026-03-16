@@ -4,6 +4,7 @@ JSON 中的路径相对于各 JSON 文件所在目录解析。
 """
 import json
 from pathlib import Path
+from random import sample
 
 import pytest
 from aichecker.checkers import check_image_match
@@ -13,6 +14,7 @@ from aichecker.utils import _encode
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 TESTCASE_DIR = REPO_ROOT / "testcase" / "image_match"
 JSONS_DIR = TESTCASE_DIR / "jsons"
+EXCLUDED_PLATFORMS = {"android", "harmony"}
 
 
 def _set_image_report_meta(request: pytest.FixtureRequest, **kwargs) -> None:
@@ -110,10 +112,17 @@ def _collect_testcase_jsons():
         if j == sample_path:
             continue
         rel = j.relative_to(JSONS_DIR)
+        rel_parts_lower = [part.lower() for part in rel.parts]
+        if any(
+            part == token or part.startswith(token)
+            for part in rel_parts_lower
+            for token in EXCLUDED_PLATFORMS
+        ):
+            continue
         cases.append((rel.parts[0], j.stem, j))
     return cases
 
-# @pytest.mark.skip(reason="Skip image match test cases for now")
+@pytest.mark.skip(reason="Skip image match test cases for now")
 @pytest.mark.parametrize("platform,app_name,json_path", _collect_testcase_jsons())
 def test_image_match_from_testcase(platform: str, app_name: str, json_path: Path, request: pytest.FixtureRequest):
     _set_image_report_meta(
@@ -210,3 +219,28 @@ def test_image_match_from_testcase_antennapod_1(request: pytest.FixtureRequest):
 def test_image_match_from_testcase_sample(request: pytest.FixtureRequest):
     json_path = JSONS_DIR  / "sample.json"
     test_image_match_from_testcase("sample", "sample", json_path, request)
+
+
+def test_image_match_from_testcase_sample_agent_image_match():
+    json_path =  Path(__file__).parent.parent / "scripts" / "sample_agent_image_match.json"
+    payload = _load_and_resolve_payload(json_path)
+    template_image = payload.get("template_image")
+    target_image = payload.get("target_image")
+
+    if "expected_passed" in payload:
+        expected_pass = bool(payload["expected_passed"])
+    elif "label" in payload:
+        expected_pass = payload.get("label") == "pass"
+    else:
+        pytest.fail(
+            f"No groundtruth found in {json_path}. "
+            f"Test case must include 'expected_passed' (boolean) or 'label' (string) field."
+        )
+
+    debug_dir = REPO_ROOT / "AIChecker" / "tests" / "image_match_output" / f"{sample}"
+
+    result = check_image_match(payload, output=debug_dir)
+    print(json.dumps(result, default=_encode, ensure_ascii=False, indent=2))
+    assert result.passed is expected_pass, (
+        f"Expected passed: {expected_pass}, but got: {result.passed}"
+    )

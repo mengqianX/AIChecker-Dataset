@@ -258,6 +258,45 @@ def resolve_output_images(image_output_root: Path, app: str, case_id: str) -> Di
     return {key: "" for key in image_names}
 
 
+def _resolve_count_change_image(abs_or_rel_path: str, case_file: Path) -> str:
+    raw = str(abs_or_rel_path or "").strip()
+    if not raw:
+        return ""
+    p = Path(raw)
+    if not p.is_absolute():
+        p = (case_file.parent / p).resolve()
+    return str(p) if p.exists() else ""
+
+
+def enrich_count_change_preview_images(rows: List[Dict[str, Any]]) -> None:
+    case_payload_cache: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if infer_checker(row) != "count_change":
+            continue
+        if row.get("preview_template_image") and row.get("preview_target_image"):
+            continue
+        case_file_raw = str(row.get("case_file", "")).strip()
+        if not case_file_raw:
+            continue
+        case_file = Path(case_file_raw)
+        if not case_file.exists():
+            continue
+        try:
+            payload = case_payload_cache.get(case_file_raw)
+            if payload is None:
+                with case_file.open("r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                case_payload_cache[case_file_raw] = payload
+            before_path = _resolve_count_change_image(str(payload.get("screenshot_a", "")), case_file)
+            after_path = _resolve_count_change_image(str(payload.get("screenshot_b", "")), case_file)
+            if before_path:
+                row["preview_template_image"] = before_path
+            if after_path:
+                row["preview_target_image"] = after_path
+        except Exception:
+            continue
+
+
 def write_latest_snapshot(rows: List[Dict[str, Any]], run_meta: Dict[str, str], latest_html: Path, checker: str) -> None:
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for r in rows:
@@ -288,6 +327,8 @@ def write_latest_snapshot(rows: List[Dict[str, Any]], run_meta: Dict[str, str], 
         image_headers = "<th>Template</th><th>Target</th><th>Match Result</th>"
         if checker == "button_color":
             image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
+        elif checker == "count_change":
+            image_headers = "<th>原图 Before</th><th>原图 After</th>"
         html_parts.append(f'<div class="card"><h2>{escape(app.capitalize())} ({len(app_rows)} 个用例)</h2>')
         html_parts.append('<div class="table-wrap"><table><thead><tr>'
                           f"<th>Case ID</th><th>预期</th><th>实际</th><th>状态</th><th>相似度</th><th>预期框</th><th>实际框</th>{image_headers}"
@@ -313,6 +354,9 @@ def write_latest_snapshot(rows: List[Dict[str, Any]], run_meta: Dict[str, str], 
                 html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
                 html_parts.append(render_image_cell(row.get("preview_button_before_image", ""), f"{row['case_id']} button before", is_template=True))
                 html_parts.append(render_image_cell(row.get("preview_button_after_image", ""), f"{row['case_id']} button after", is_template=True))
+            elif checker == "count_change":
+                html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} before"))
+                html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
             else:
                 html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} template", is_template=True))
                 html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} target"))
@@ -415,7 +459,9 @@ def write_failure_view(rows: List[Dict[str, Any]], run_meta: Dict[str, str], fai
     image_headers = "<th>Template</th><th>Target</th><th>Match Result</th>"
     if checker == "button_color":
         image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
-    no_data_colspan = 13 if checker == "button_color" else 12
+    elif checker == "count_change":
+        image_headers = "<th>原图 Before</th><th>原图 After</th>"
+    no_data_colspan = 13 if checker == "button_color" else 11 if checker == "count_change" else 12
     html_parts.append('<div class="card"><div class="table-wrap"><table><thead><tr>'
                       f"<th>App</th><th>Case ID</th><th>预期</th><th>实际</th><th>状态</th><th>相似度</th><th>预期框</th><th>实际框</th><th>错误信息</th>{image_headers}"
                       "</tr></thead><tbody>")
@@ -445,6 +491,9 @@ def write_failure_view(rows: List[Dict[str, Any]], run_meta: Dict[str, str], fai
                 html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
                 html_parts.append(render_image_cell(row.get("preview_button_before_image", ""), f"{row['case_id']} button before", is_template=True))
                 html_parts.append(render_image_cell(row.get("preview_button_after_image", ""), f"{row['case_id']} button after", is_template=True))
+            elif checker == "count_change":
+                html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} before"))
+                html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
             else:
                 html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} template", is_template=True))
                 html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} target"))
@@ -461,6 +510,8 @@ def run(note: str, image_output_root: Path, source: str, checker_name: str) -> N
         run_rows, run_meta = load_latest_run_rows_from_history(checker_name)
         if not run_rows:
             raise RuntimeError(f"未找到 {checker_name} 的 pytest 结果。请先执行 pytest，再运行 --source pytest")
+        if checker_name == "count_change":
+            enrich_count_change_preview_images(run_rows)
         if note:
             run_meta["note"] = note
         write_latest_snapshot(run_rows, run_meta, paths["latest"], checker_name)

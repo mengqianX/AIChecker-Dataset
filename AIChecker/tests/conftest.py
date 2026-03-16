@@ -8,6 +8,23 @@ from typing import Any, Dict, List
 
 import pytest
 
+# 加载 .env 文件中的环境变量（如果存在）
+try:
+    from dotenv import load_dotenv
+    REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+    # 尝试从多个位置加载 .env 文件
+    env_files = [
+        REPO_ROOT / ".env",
+        REPO_ROOT / "AIChecker" / ".env",
+        Path(__file__).resolve().parent.parent.parent / ".env",
+    ]
+    for env_file in env_files:
+        if env_file.exists():
+            load_dotenv(env_file, override=False)  # override=False 表示不覆盖已存在的环境变量
+            break
+except ImportError:
+    # python-dotenv 未安装时忽略
+    pass
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 HISTORY_DIR = REPO_ROOT / "reports" / "history"
@@ -83,6 +100,8 @@ def _status_from_expected_actual(expected: str, actual: str) -> str:
 def _checker_from_test_path(test_path: str) -> str | None:
     if "testcase_image_match_test.py" in test_path or "test_image_match_cases.py" in test_path:
         return "image_match"
+    if "test_image_match_feature_cases.py" in test_path:
+        return "image_match_feature"
     if "test_button_cases.py" in test_path:
         return "button_color"
     if "test_count_change_cases.py" in test_path:

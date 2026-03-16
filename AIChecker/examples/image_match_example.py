@@ -52,7 +52,7 @@ def example_1_basic_match():
     
     # 执行匹配
     debug_dir = script_dir / "debug" / "example_search_icon"
-    result = check_image_match(payload, debug_dir=debug_dir)
+    result = check_image_match(payload, output=debug_dir)
     
     # 显示结果
     print(f"\n✅ 匹配结果: {'找到匹配' if result.passed else '未找到匹配'}")

@@ -58,7 +58,6 @@ def test_button_color_change_from_testcase(
         case_id=app_name,
         case_file=str(json_path),
     )
-
     if not json_path.exists():
         pytest.skip(f"JSON not found: {json_path}")
     payload = _load_and_resolve_payload(json_path)
@@ -66,23 +65,20 @@ def test_button_color_change_from_testcase(
         request,
         template_image=Path(payload.get("screenshot_a", "N/A")).name,
         target_image=Path(payload.get("screenshot_b", "N/A")).name,
+        expected_bounds=payload.get("bounds", "N/A"),
     )
-
     if not payload.get("screenshot_a") or not payload.get("screenshot_b"):
         pytest.skip(f"Missing screenshots in {json_path}")
     for p in (payload.get("screenshot_a"), payload.get("screenshot_b")):
         if p and not Path(p).exists():
             pytest.skip(f"Screenshot not found: {p}")
-
     debug_dir = REPO_ROOT / "AIChecker" / "debug" / "crops" / f"{platform}_{app_name}"
-    result = check_button_color(payload, debug_dir=debug_dir)
     _set_checker_report_meta(
         request,
-        preview_template_image=str(Path(payload.get("screenshot_a", "")).resolve()),
-        preview_target_image=str(Path(payload.get("screenshot_b", "")).resolve()),
-        preview_button_before_image=str((debug_dir / "button_crop_before.png").resolve()),
-        preview_button_after_image=str((debug_dir / "button_crop_after.png").resolve()),
+        preview_template_image=str(Path(payload["screenshot_a"]).resolve()),
+        preview_target_image=str(Path(payload["screenshot_b"]).resolve()),
     )
+    result = check_button_color(payload, debug_dir=debug_dir)
     print(json.dumps(result, default=_encode, ensure_ascii=False, indent=2))
 
     if "expected_passed" in payload:
@@ -93,10 +89,15 @@ def test_button_color_change_from_testcase(
         groundtruth_source = f"label={payload.get('label')}"
     else:
         pytest.skip(f"No groundtruth found in {json_path} (missing 'expected_passed' or 'label')")
-    _set_checker_report_meta(request, expected_passed=expected_pass)
+    _set_checker_report_meta(
+        request,
+        expected_passed=expected_pass,
+        actual_passed=bool(result.passed),
+        preview_button_before_image=str((debug_dir / "button_crop_before.png").resolve()),
+        preview_button_after_image=str((debug_dir / "button_crop_after.png").resolve()),
+    )
 
     assert result.passed is expected_pass, (
         f"{platform}/{app_name}: expected passed={expected_pass} ({groundtruth_source}), "
         f"got passed={result.passed}, basis={result.basis}"
     )
-    _set_checker_report_meta(request, actual_passed=bool(result.passed))

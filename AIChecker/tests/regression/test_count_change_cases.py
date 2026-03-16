@@ -4,6 +4,7 @@ JSON 中的路径相对于各 JSON 文件所在目录解析。
 """
 import json
 from pathlib import Path
+from pyexpat import model
 
 import pytest
 from aichecker.checkers import check_count_change
@@ -12,6 +13,12 @@ from aichecker.utils import _encode
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 TESTCASE_DIR = REPO_ROOT / "testcase" / "count_change"
 JSONS_DIR = TESTCASE_DIR / "jsons"
+
+
+def _set_checker_report_meta(request: pytest.FixtureRequest, **kwargs) -> None:
+    current = getattr(request.node, "_checker_report_meta", {})
+    current.update(kwargs)
+    request.node._checker_report_meta = current
 
 
 def _resolve_path(json_path: Path, rel_path: str) -> Path:
@@ -43,29 +50,43 @@ def _collect_testcase_jsons():
 
 
 @pytest.mark.parametrize("platform,app_name,json_path", _collect_testcase_jsons())
-def test_count_change_from_testcase(platform: str, app_name: str, json_path: Path):
+def test_count_change_from_testcase(
+    platform: str, app_name: str, json_path: Path, request: pytest.FixtureRequest
+):
+    _set_checker_report_meta(
+        request,
+        checker="count_change",
+        app=platform,
+        case_id=app_name,
+        case_file=str(json_path),
+    )
     if not json_path.exists():
         pytest.skip(f"JSON not found: {json_path}")
 
     payload = _load_and_resolve_payload(json_path)
+    _set_checker_report_meta(
+        request,
+        template_image=Path(payload.get("screenshot_a", "N/A")).name,
+        target_image=Path(payload.get("screenshot_b", "N/A")).name,
+    )
 
     import os
 
-    backend_override = os.getenv("COUNT_CHANGE_BACKEND")
-    if backend_override:
-        payload["backend"] = backend_override.strip().lower()
-        if payload["backend"] == "ui-tars":
-            payload["base_url"] = payload.get("base_url") or os.getenv("UI_TARS_BASE_URL", "http://localhost:8000/v1")
-            payload["model"] = payload.get("model") or os.getenv("UI_TARS_MODEL", "ui-tars")
-            payload["api_key"] = payload.get("api_key") or os.getenv("UI_TARS_API_KEY") or os.getenv("HF_TOKEN") or "dummy"
-        elif payload["backend"] == "qwen":
-            if os.getenv("QWEN_MODEL"):
-                payload["model"] = os.getenv("QWEN_MODEL")
-            if os.getenv("QWEN_BASE_URL"):
-                payload["base_url"] = os.getenv("QWEN_BASE_URL")
-                payload["model"] = payload.get("model") or os.getenv("QWEN_MODEL") or "Qwen/Qwen2.5-VL-7B-Instruct"
-                payload["api_key"] = payload.get("api_key") or os.getenv("QWEN_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
-
+    backend = payload.get("backend") or os.getenv("COUNT_CHANGE_BACKEND") or "qwen"
+    if backend == "ui-tars":
+        base_url = payload.get("base_url") or os.getenv("UI_TARS_BASE_URL", "https://zcammjkko6k15eg7.us-east-1.aws.endpoints.huggingface.cloud/v1")
+        model = payload.get("model") or os.getenv("UI_TARS_MODEL") or "ByteDance-Seed/UI-TARS-1.5-7B"
+        api_key = payload.get("api_key") or os.getenv("UI_TARS_API_KEY")
+    elif backend == "qwen":
+        base_url = payload.get("base_url") or os.getenv("QWEN_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        model = payload.get("model") or os.getenv("QWEN_MODEL") or "qwen-vl-max"
+        api_key = payload.get("api_key") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
+    elif backend == "mai-ui":
+        base_url = payload.get("base_url") or os.getenv("MAI_UI_BASE_URL") or "https://bgkgog9p754r0x2j.us-east-1.aws.endpoints.huggingface.cloud/v1"
+        model = payload.get("model") or os.getenv("MAI_UI_MODEL") or "Tongyi-MAI/MAI-UI-8B"
+        api_key = payload.get("api_key") or os.getenv("MAI_UI_API_KEY") or os.getenv("HF_TOKEN") 
+    else:
+        pytest.skip(f"Unsupported backend: {backend}. Supported: qwen, ui-tars, mai-ui")
     bounds = payload.get("bounds", [])
     if bounds == [0, 0, 0, 0]:
         pytest.skip(f"Skipping placeholder test case: {json_path} (bounds not set)")
@@ -74,13 +95,6 @@ def test_count_change_from_testcase(platform: str, app_name: str, json_path: Pat
     for p in (payload.get("screenshot_a"), payload.get("screenshot_b")):
         if p and not Path(p).exists():
             pytest.skip(f"Screenshot not found: {p}")
-
-    api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not api_key and not payload.get("api_key"):
-        pytest.skip(
-            f"API key not configured. Set DASHSCOPE_API_KEY or OPENAI_API_KEY environment variable, "
-            f"or add api_key to {json_path}"
-        )
 
     if "expected_passed" in payload:
         expected_pass = bool(payload["expected_passed"])
@@ -91,10 +105,11 @@ def test_count_change_from_testcase(platform: str, app_name: str, json_path: Pat
             f"No groundtruth found in {json_path}. "
             f"Test case must include 'expected_passed' (boolean) or 'label' (string) field."
         )
+    _set_checker_report_meta(request, expected_passed=expected_pass)
 
     debug_dir = REPO_ROOT / "AIChecker" / "debug" / "count_change" / f"{platform}_{app_name}"
     try:
-        result = check_count_change(payload, debug_dir=debug_dir)
+        result = check_count_change(payload, debug_dir=debug_dir, api_key=api_key, model=model, base_url=base_url)
     except ImportError as e:
         pytest.skip(f"{platform}/{app_name}: Missing required dependency. Error: {e}")
     except ValueError as e:
@@ -115,3 +130,4 @@ def test_count_change_from_testcase(platform: str, app_name: str, json_path: Pat
         f"{platform}/{app_name}: Groundtruth expected_passed={expected_pass}, "
         f"but model detected passed={result.passed}. Model basis: {result.basis}"
     )
+    _set_checker_report_meta(request, actual_passed=bool(result.passed))
