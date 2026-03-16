@@ -1,0 +1,16 @@
+{
+  "type": "image_match",
+  "template_image": "../../../templates/HarmonyOS/ximalaya/ximalaya_2_template.png",
+  "target_image": "../../../screens/HarmonyOS/ximalaya/ximalaya_2_target.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": false,
+  "expected_bounds": [
+    71,
+    2180,
+    146,
+    2255
+  ],
+  "bounds_tolerance": 40,
+  "source_label": "pass",
+  "source_case": "HarmonyOS/ximalaya/ximalaya_2.json"
+}

@@ -1,0 +1,16 @@
+{
+  "type": "image_match",
+  "template_image": "../../../templates/HarmonyOS/pdd/pdd_1_template.png",
+  "target_image": "../../../screens/HarmonyOS/pdd/pdd_1_target.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": false,
+  "expected_bounds": [
+    897,
+    1468,
+    1050,
+    1565
+  ],
+  "bounds_tolerance": 40,
+  "source_label": "pass",
+  "source_case": "HarmonyOS/pdd/pdd_1.json"
+}

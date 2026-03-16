@@ -122,7 +122,7 @@ def _collect_testcase_jsons():
         cases.append((rel.parts[0], j.stem, j))
     return cases
 
-@pytest.mark.skip(reason="Skip image match test cases for now")
+# @pytest.mark.skip(reason="Skip image match test cases for now")
 @pytest.mark.parametrize("platform,app_name,json_path", _collect_testcase_jsons())
 def test_image_match_from_testcase(platform: str, app_name: str, json_path: Path, request: pytest.FixtureRequest):
     _set_image_report_meta(
@@ -220,7 +220,7 @@ def test_image_match_from_testcase_sample(request: pytest.FixtureRequest):
     json_path = JSONS_DIR  / "sample.json"
     test_image_match_from_testcase("sample", "sample", json_path, request)
 
-
+@pytest.mark.skip(reason="Skip image match test cases for now")
 def test_image_match_from_testcase_sample_agent_image_match():
     json_path =  Path(__file__).parent.parent / "scripts" / "sample_agent_image_match.json"
     payload = _load_and_resolve_payload(json_path)

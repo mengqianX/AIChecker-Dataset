@@ -1,0 +1,16 @@
+{
+  "type": "image_match",
+  "template_image": "../../../templates/Android/qqmusic/qqmusic_2_template.png",
+  "target_image": "../../../screens/Android/qqmusic/qqmusic_2_target.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": false,
+  "expected_bounds": [
+    834,
+    841,
+    984,
+    940
+  ],
+  "bounds_tolerance": 40,
+  "source_label": "pass",
+  "source_case": "Android/qqmusic/qqmusic_2.json"
+}

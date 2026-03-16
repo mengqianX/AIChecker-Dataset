@@ -1,0 +1,8 @@
+{
+    "type": "image_match",
+    "template_image": "./template.png",
+    "target_image": "./target.png",
+    "similarity_threshold": 0.9,
+    "expected_passed": true,
+    "bounds_tolerance": 40
+  }

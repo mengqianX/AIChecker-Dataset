@@ -1,0 +1,16 @@
+{
+  "type": "image_match",
+  "template_image": "../../../templates/HarmonyOS/feishu/feishu_1_f_template.png",
+  "target_image": "../../../screens/HarmonyOS/feishu/feishu_1_f_target.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": true,
+  "expected_bounds": [
+    419,
+    2168,
+    485,
+    2234
+  ],
+  "bounds_tolerance": 40,
+  "source_label": "fail",
+  "source_case": "HarmonyOS/feishu/feishu_1_f.json"
+}

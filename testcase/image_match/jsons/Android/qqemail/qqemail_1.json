@@ -1,0 +1,16 @@
+{
+  "type": "image_match",
+  "template_image": "../../../templates/Android/qqemail/qqemail_1_template.png",
+  "target_image": "../../../screens/Android/qqemail/qqemail_1_target.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": false,
+  "expected_bounds": [
+    909,
+    1536,
+    1035,
+    1602
+  ],
+  "bounds_tolerance": 40,
+  "source_label": "pass",
+  "source_case": "Android/qqemail/qqemail_1.json"
+}

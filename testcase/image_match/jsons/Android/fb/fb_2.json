@@ -1,0 +1,16 @@
+{
+  "type": "image_match",
+  "template_image": "../../../templates/Android/fb/fb_2_template.png",
+  "target_image": "../../../screens/Android/fb/fb_2_target.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": false,
+  "expected_bounds": [
+    360,
+    120,
+    540,
+    252
+  ],
+  "bounds_tolerance": 40,
+  "source_label": "pass",
+  "source_case": "Android/fb/fb_2.json"
+}

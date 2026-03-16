@@ -1,0 +1,16 @@
+{
+  "type": "image_match",
+  "template_image": "../../../templates/Android/zhifubao/zhifubao_1_f_template.png",
+  "target_image": "../../../screens/Android/zhifubao/zhifubao_1_f_target.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": true,
+  "expected_bounds": [
+    360,
+    264,
+    720,
+    384
+  ],
+  "bounds_tolerance": 40,
+  "source_label": "fail",
+  "source_case": "Android/zhifubao/zhifubao_1_f.json"
+}

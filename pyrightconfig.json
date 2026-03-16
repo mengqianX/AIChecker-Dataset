@@ -1,0 +1,10 @@
+{
+  "include": ["AIChecker"],
+  "venvPath": "AIChecker",
+  "venv": ".venv",
+  "executionEnvironments": [
+    {
+      "root": "AIChecker"
+    }
+  ]
+}

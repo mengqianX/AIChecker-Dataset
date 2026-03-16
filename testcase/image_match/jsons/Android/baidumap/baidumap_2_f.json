@@ -1,0 +1,16 @@
+{
+  "type": "image_match",
+  "template_image": "../../../templates/Android/baidumap/baidumap_2_f_template.png",
+  "target_image": "../../../screens/Android/baidumap/baidumap_2_f_target.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": true,
+  "expected_bounds": [
+    865,
+    933,
+    1021,
+    1032
+  ],
+  "bounds_tolerance": 40,
+  "source_label": "fail",
+  "source_case": "Android/baidumap/baidumap_2_f.json"
+}

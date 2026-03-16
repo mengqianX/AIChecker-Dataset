@@ -1,0 +1,16 @@
+{
+  "type": "image_match",
+  "template_image": "../../../templates/Android/telegram/telegram_1_template.png",
+  "target_image": "../../../screens/Android/telegram/telegram_1_target.png",
+  "similarity_threshold": 0.9,
+  "expected_passed": false,
+  "expected_bounds": [
+    903,
+    1903,
+    1014,
+    1963
+  ],
+  "bounds_tolerance": 40,
+  "source_label": "pass",
+  "source_case": "Android/telegram/telegram_1.json"
+}
