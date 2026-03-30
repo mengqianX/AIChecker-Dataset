@@ -2,7 +2,6 @@
   "type": "image_match",
   "template_image": "../../screens/bilibili/bilibili_template_2.png",
   "target_image": "../../screens/bilibili/bilibili_target_13.png",
-  "similarity_threshold": 0.9,
   "expected_passed": true,
   "expected_bounds": [],
   "bounds_tolerance": 40

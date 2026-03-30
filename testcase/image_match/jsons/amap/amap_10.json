@@ -2,7 +2,6 @@
   "type": "image_match",
   "template_image": "../../screens/amap/amap_template_2.png",
   "target_image": "../../screens/amap/amap_target_8.png",
-  "similarity_threshold": 0.9,
   "expected_passed": false,
   "expected_bounds": [
     0,

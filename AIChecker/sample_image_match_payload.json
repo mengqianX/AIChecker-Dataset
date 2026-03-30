@@ -1,7 +1,6 @@
 {
   "template_image": "./path/to/template.png",
   "target_image": "./path/to/target.png",
-  "similarity_threshold": 0.8,
   "scale_min": 0.5,
   "scale_max": 2.0,
   "scale_step": 0.1,

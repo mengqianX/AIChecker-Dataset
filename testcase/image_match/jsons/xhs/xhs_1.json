@@ -2,7 +2,6 @@
   "type": "image_match",
   "template_image": "../../screens/xhs/xhs_template_1.png",
   "target_image": "../../screens/xhs/xhs_target_1.png",
-  "similarity_threshold": 0.9,
   "expected_passed": true,
   "expected_bounds": [
     15,

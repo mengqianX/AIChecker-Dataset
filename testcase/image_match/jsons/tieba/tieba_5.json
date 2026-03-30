@@ -2,7 +2,6 @@
   "type": "image_match",
   "template_image": "../../screens/tieba/tieba_template_5.png",
   "target_image": "../../screens/tieba/tieba_target_5.png",
-  "similarity_threshold": 0.9,
   "expected_passed": true,
   "expected_bounds": [
     48,

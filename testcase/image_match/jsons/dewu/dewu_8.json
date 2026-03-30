@@ -2,7 +2,6 @@
   "type": "image_match",
   "template_image": "../../screens/dewu/dewu_template_8.png",
   "target_image": "../../screens/dewu/dewu_target_8.png",
-  "similarity_threshold": 0.9,
   "expected_passed": true,
   "expected_bounds": [
     248,

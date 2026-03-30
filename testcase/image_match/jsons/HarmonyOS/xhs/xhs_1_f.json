@@ -2,7 +2,6 @@
   "type": "image_match",
   "template_image": "../../../templates/HarmonyOS/xhs/xhs_1_f_template.png",
   "target_image": "../../../screens/HarmonyOS/xhs/xhs_1_f_target.png",
-  "similarity_threshold": 0.9,
   "expected_passed": true,
   "expected_bounds": [
     656,

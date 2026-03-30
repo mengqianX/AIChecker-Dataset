@@ -2,7 +2,6 @@
   "type": "image_match",
   "template_image": "../../screens/dzdp/dzdp_template_7.png",
   "target_image": "../../screens/dzdp/dzdp_target_7.png",
-  "similarity_threshold": 0.9,
   "expected_passed": true,
   "expected_bounds": [
     389,
