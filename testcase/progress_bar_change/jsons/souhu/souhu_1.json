@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/souhu/souhu_before_1.png",
+  "screenshot_b": "../../screens/souhu/souhu_after_1.png",
+  "bounds": [
+    216,
+    809,
+    2160,
+    953
+  ],
+  "expected_passed": true
+}

@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/iqiyi/iqiyi_before_1.png",
+  "screenshot_b": "../../screens/iqiyi/iqiyi_after_1.png",
+  "bounds": [
+    303,
+    732,
+    2073,
+    1050
+  ],
+  "expected_passed": true
+}

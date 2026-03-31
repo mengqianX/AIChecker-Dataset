@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/qq/qq_before_1.png",
+  "screenshot_b": "../../screens/qq/qq_after_1.png",
+  "bounds": [
+    0,
+    2028,
+    1080,
+    2082
+  ],
+  "expected_passed": true
+}
