@@ -37,15 +37,12 @@ def _load_and_resolve_payload(json_path: Path) -> dict:
 
 def _collect_testcase_jsons():
     cases = []
-    sample_path = JSONS_DIR / "sample.json"
-    if sample_path.exists():
-        cases.append(("sample", "sample", sample_path))
-    for subdir in ("Android", "HarmonyOS"):
-        dir_path = JSONS_DIR / subdir
-        if not dir_path.is_dir():
+    for j in sorted(JSONS_DIR.rglob("*.json")):
+        if "sample" in j.stem.lower():
             continue
-        for j in dir_path.glob("*.json"):
-            cases.append((subdir, j.stem, j))
+        rel = j.relative_to(JSONS_DIR)
+        app = rel.parts[0] if rel.parts else j.stem
+        cases.append((app, j.stem, j))
     return cases
 
 
