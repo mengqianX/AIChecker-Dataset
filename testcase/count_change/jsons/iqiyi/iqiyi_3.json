@@ -1,0 +1,8 @@
+{
+    "type": "count_change",
+    "screenshot_a": "../../screens/iqiyi/iqiyi_before_3.png",
+    "screenshot_b": "../../screens/iqiyi/iqiyi_after_3.png",
+    "bounds": [194, 698, 219, 751],
+    "expected_passed": true,
+    "label": "pass"
+}
