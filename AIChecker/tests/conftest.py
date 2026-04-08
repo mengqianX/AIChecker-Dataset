@@ -106,6 +106,8 @@ def _checker_from_test_path(test_path: str) -> str | None:
         return "button_color"
     if "test_count_change_cases.py" in test_path:
         return "count_change"
+    if "test_progress_cases.py" in test_path:
+        return "progress_change"
     return None
 
 

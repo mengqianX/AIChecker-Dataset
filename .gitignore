@@ -64,3 +64,5 @@ AIChecker/tests/image_match_output_compare/root
 .env
 .env.local
 .env.*.local
+
+.specstory/

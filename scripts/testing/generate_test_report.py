@@ -18,7 +18,7 @@ HISTORY_DIR = REPORT_DIR / "history"
 LEGACY_RUNS_CSV = HISTORY_DIR / "test_runs.csv"
 LEGACY_RESULTS_CSV = HISTORY_DIR / "test_case_results.csv"
 DEFAULT_IMAGE_OUTPUT_ROOT = REPO_ROOT / "AIChecker/tests/image_match_output"
-SUPPORTED_CHECKERS = ("image_match", "button_color", "count_change")
+SUPPORTED_CHECKERS = ("image_match", "button_color", "count_change", "progress_change")
 
 
 def report_paths_for_checker(checker: str) -> Dict[str, Path]:
@@ -52,6 +52,8 @@ def infer_checker(row: Dict[str, Any]) -> str:
         return "button_color"
     if "count_change" in lowered or "test_count_change_cases.py" in lowered:
         return "count_change"
+    if "progress_change" in lowered or "test_progress_cases.py" in lowered:
+        return "progress_change"
     return "unknown"
 
 
@@ -327,7 +329,7 @@ def write_latest_snapshot(rows: List[Dict[str, Any]], run_meta: Dict[str, str], 
         image_headers = "<th>Template</th><th>Target</th><th>Match Result</th>"
         if checker == "button_color":
             image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
-        elif checker == "count_change":
+        elif checker in {"count_change", "progress_change"}:
             image_headers = "<th>原图 Before</th><th>原图 After</th>"
         html_parts.append(f'<div class="card"><h2>{escape(app.capitalize())} ({len(app_rows)} 个用例)</h2>')
         html_parts.append('<div class="table-wrap"><table><thead><tr>'
@@ -354,7 +356,7 @@ def write_latest_snapshot(rows: List[Dict[str, Any]], run_meta: Dict[str, str], 
                 html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
                 html_parts.append(render_image_cell(row.get("preview_button_before_image", ""), f"{row['case_id']} button before", is_template=True))
                 html_parts.append(render_image_cell(row.get("preview_button_after_image", ""), f"{row['case_id']} button after", is_template=True))
-            elif checker == "count_change":
+            elif checker in {"count_change", "progress_change"}:
                 html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} before"))
                 html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
             else:
@@ -459,9 +461,9 @@ def write_failure_view(rows: List[Dict[str, Any]], run_meta: Dict[str, str], fai
     image_headers = "<th>Template</th><th>Target</th><th>Match Result</th>"
     if checker == "button_color":
         image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
-    elif checker == "count_change":
+    elif checker in {"count_change", "progress_change"}:
         image_headers = "<th>原图 Before</th><th>原图 After</th>"
-    no_data_colspan = 13 if checker == "button_color" else 11 if checker == "count_change" else 12
+    no_data_colspan = 13 if checker == "button_color" else 11 if checker in {"count_change", "progress_change"} else 12
     html_parts.append('<div class="card"><div class="table-wrap"><table><thead><tr>'
                       f"<th>App</th><th>Case ID</th><th>预期</th><th>实际</th><th>状态</th><th>相似度</th><th>预期框</th><th>实际框</th><th>错误信息</th>{image_headers}"
                       "</tr></thead><tbody>")
@@ -491,7 +493,7 @@ def write_failure_view(rows: List[Dict[str, Any]], run_meta: Dict[str, str], fai
                 html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
                 html_parts.append(render_image_cell(row.get("preview_button_before_image", ""), f"{row['case_id']} button before", is_template=True))
                 html_parts.append(render_image_cell(row.get("preview_button_after_image", ""), f"{row['case_id']} button after", is_template=True))
-            elif checker == "count_change":
+            elif checker in {"count_change", "progress_change"}:
                 html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} before"))
                 html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
             else:

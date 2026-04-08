@@ -1,0 +1,8 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/baidudisk/baidudisk_1_before.png",
+  "screenshot_b": "../../screens/baidudisk/baidudisk_1_after.png",
+  "bounds": [
+  ],
+  "expected_passed": true
+}

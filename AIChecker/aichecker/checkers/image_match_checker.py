@@ -536,8 +536,23 @@ def _write_final_match_result_image(result: CheckResult, output: Path | None) ->
         cv2.rectangle(vis, (left, top), (right, bottom), color, 2)
         backend = str(result.details.get("backend_used", "unknown"))
         similarity = float(result.details.get("similarity", 0.0) or 0.0)
+        base_threshold = float(result.details.get("similarity_threshold", 0.0) or 0.0)
+        decision_reason = "normal"
+        effective_threshold = base_threshold
+        if bool(result.details.get("passed_by_relaxed_template_threshold", False)):
+            decision_reason = "auto_relaxed_template"
+            effective_threshold = float(
+                result.details.get("auto_relaxed_template_threshold", base_threshold) or base_threshold
+            )
+        elif bool(result.details.get("passed_by_auto_offscale_relax", False)):
+            decision_reason = "auto_offscale_relax"
+            off_meta = result.details.get("auto_offscale_relax", {}) or {}
+            effective_threshold = float(off_meta.get("offscale_threshold", base_threshold) or base_threshold)
         status = "PASS" if result.passed else "FAIL"
-        label = f"{status} | backend={backend} | sim={similarity:.3f}"
+        label = (
+            f"{status} | backend={backend} | sim={similarity:.3f} | "
+            f"th={effective_threshold:.3f} (base={base_threshold:.3f}) | reason={decision_reason}"
+        )
         cv2.putText(
             vis,
             label,
