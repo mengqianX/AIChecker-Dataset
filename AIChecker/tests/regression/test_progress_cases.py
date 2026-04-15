@@ -11,7 +11,7 @@ from aichecker.checkers import check_progress_change
 from aichecker.utils import _encode
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-TESTCASE_DIR = REPO_ROOT / "testcase" / "progress_change"
+TESTCASE_DIR = REPO_ROOT / "testcase" / "progress_bar_change"
 JSONS_DIR = TESTCASE_DIR / "jsons"
 
 
@@ -73,7 +73,7 @@ def test_progress_change_from_testcase(
     for p in (payload.get("screenshot_a"), payload.get("screenshot_b")):
         if p and not Path(p).exists():
             pytest.skip(f"Screenshot not found: {p}")
-    debug_dir = REPO_ROOT / "AIChecker" / "debug" / "progress_change" / f"{platform}_{app_name}"
+    debug_dir = REPO_ROOT / "AIChecker" / "debug" / "progress_bar_change" / f"{platform}_{app_name}"
     _set_checker_report_meta(
         request,
         preview_template_image=str(Path(payload["screenshot_a"]).resolve()),

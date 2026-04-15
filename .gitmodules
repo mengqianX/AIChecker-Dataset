@@ -1,0 +1,3 @@
+[submodule "AIChecker/TestAgent"]
+	path = AIChecker/TestAgent
+	url = git@github.com:mengqianX/TestAgent.git
