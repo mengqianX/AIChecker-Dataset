@@ -1,0 +1,13 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/bilibili/bilibili_template_11.png",
+  "target_image": "../../screens/bilibili/bilibili_target_11_resize.png",
+  "expected_passed": true,
+  "expected_bounds": [
+    0,
+    120,
+    2106,
+    288
+  ],
+  "bounds_tolerance": 40
+}

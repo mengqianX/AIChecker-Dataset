@@ -1,0 +1,13 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/weibo/weibo_template_2.png",
+  "target_image": "../../screens/weibo/weibo_target_2_resize.png",
+  "expected_passed": true,
+  "expected_bounds": [
+    357,
+    120,
+    723,
+    250
+  ],
+  "bounds_tolerance": 40
+}
