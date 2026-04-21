@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/douyin/douyin_3_before.png",
+  "screenshot_b": "../../screens/douyin/douyin_3_after.png",
+  "bounds": [
+    941,
+    1020,
+    1049,
+    1128
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

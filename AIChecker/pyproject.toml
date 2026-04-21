@@ -22,6 +22,9 @@ dependencies = [
 dev = [
   "pytest",
 ]
+mobile = [
+  "Appium-Python-Client>=4.4.0",
+]
 
 [project.urls]
 Homepage = "https://example.com/aichecker"
