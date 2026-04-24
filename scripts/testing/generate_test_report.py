@@ -1,24 +1,54 @@
 import argparse
 import csv
-import glob
 import json
 import os
+import re
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from functools import lru_cache
 from html import escape
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-ROOT_CASE_DIR = REPO_ROOT / "testcase/image_match/jsons"
+ROOT_CASE_DIR = REPO_ROOT / "testcase" / "image_match" / "jsons"
 REPORT_DIR = REPO_ROOT / "reports"
 HISTORY_DIR = REPORT_DIR / "history"
 LEGACY_RUNS_CSV = HISTORY_DIR / "test_runs.csv"
 LEGACY_RESULTS_CSV = HISTORY_DIR / "test_case_results.csv"
-DEFAULT_IMAGE_OUTPUT_ROOT = REPO_ROOT / "AIChecker/tests/image_match_output"
+DEFAULT_IMAGE_OUTPUT_ROOT = REPO_ROOT / "AIChecker" / "tests" / "image_match_output"
 SUPPORTED_CHECKERS = ("image_match", "button_color", "count_change", "progress_change")
+ISSUE_STATUSES = {"不一致(MISMATCH)", "异常(ERROR)"}
+GOOD_STATUS = "一致(MATCH)"
+UNKNOWN_STATUSES = {"未知(UNKNOWN)", "预期未知(UNKNOWN_EXPECTED)"}
+STATUS_PRIORITY = {
+    "异常(ERROR)": 0,
+    "不一致(MISMATCH)": 1,
+    "跳过(SKIPPED)": 2,
+    "未知(UNKNOWN)": 3,
+    "预期未知(UNKNOWN_EXPECTED)": 4,
+    "一致(MATCH)": 5,
+}
+HISTORY_LABEL_PRIORITY = {
+    "新回归": 0,
+    "持续失败": 1,
+    "首次失败": 2,
+    "首次异常": 3,
+    "已修复": 4,
+    "波动中": 5,
+    "稳定通过": 6,
+    "首次通过": 7,
+    "待确认": 8,
+    "N/A": 9,
+}
+CASE_JSON_ROOTS = {
+    "image_match": REPO_ROOT / "testcase" / "image_match" / "jsons",
+    "button_color": REPO_ROOT / "testcase" / "button_color_change" / "jsons",
+    "count_change": REPO_ROOT / "testcase" / "count_change" / "jsons",
+    "progress_change": REPO_ROOT / "testcase" / "progress_bar_change" / "jsons",
+}
 
 
 def report_paths_for_checker(checker: str) -> Dict[str, Path]:
@@ -94,6 +124,7 @@ def get_git_info() -> Dict[str, str]:
 def try_import_checker():
     try:
         from AIChecker.aichecker.checkers.image_match_checker import check_image_match
+
         return check_image_match, None
     except Exception as exc:
         return None, str(exc)
@@ -168,7 +199,7 @@ def evaluate_case(case_file: Path, payload: Dict[str, Any], checker, checker_err
         row["similarity"] = f"{float(result.details.get('similarity', 0.0)):.4f}"
         row["actual_bounds"] = format_bounds(result.details.get("bounds"))
         if expected_passed in (True, False):
-            row["status"] = "一致(MATCH)" if (actual_passed == expected_passed) else "不一致(MISMATCH)"
+            row["status"] = "一致(MATCH)" if actual_passed == expected_passed else "不一致(MISMATCH)"
         else:
             row["status"] = "预期未知(UNKNOWN_EXPECTED)"
     except Exception as exc:
@@ -212,37 +243,258 @@ def append_csv_rows(csv_file: Path, fieldnames: List[str], rows: List[Dict[str, 
             writer.writerow({k: row.get(k, "") for k in fieldnames})
 
 
-def html_page(title: str, body: str) -> str:
+def html_page(title: str, body: str, script: str = "") -> str:
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>{escape(title)}</title>
 <style>
-body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;margin:24px;line-height:1.45;color:#1f2937;background:#f8fafc}}
-.card{{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:16px}}
-h1,h2{{margin:0 0 12px}} h1{{font-size:24px}} h2{{font-size:18px;margin-top:16px}}
-ul{{margin:0;padding-left:20px}} .muted{{color:#6b7280}}
-.table-wrap{{overflow-x:auto;border:1px solid #e5e7eb;border-radius:8px;background:#fff}}
-table{{border-collapse:collapse;width:100%;min-width:900px}}
-th,td{{border-bottom:1px solid #e5e7eb;padding:8px 10px;text-align:left;font-size:13px;white-space:nowrap;vertical-align:top}}
-thead th{{position:sticky;top:0;background:#f3f4f6;z-index:1}}
-.tag-ok{{color:#166534;font-weight:600}} .tag-bad{{color:#b91c1c;font-weight:600}} .tag-unknown{{color:#92400e;font-weight:600}}
-code{{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px}}
-.error-cell{{white-space:normal!important;overflow-wrap:anywhere;word-break:break-word;width:clamp(420px,46vw,980px);max-width:clamp(420px,46vw,980px);min-width:420px;line-height:1.4;max-height:7em;overflow-y:auto;overflow-x:hidden;display:block}}
-</style></head><body>{body}</body></html>"""
+:root{{color-scheme:light;--bg:#f3f7fb;--card:#ffffff;--border:#dbe5f0;--text:#18212f;--muted:#65758b;--accent:#0f766e;--accent-soft:#e6fffa;--danger:#b42318;--danger-soft:#fef3f2;--warning:#b54708;--warning-soft:#fff7ed;--ok:#166534;--ok-soft:#ecfdf3;--shadow:0 10px 30px rgba(15,23,42,0.06)}}
+*{{box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;margin:0;padding:24px;line-height:1.5;color:var(--text);background:linear-gradient(180deg,#f8fbff 0%,var(--bg) 100%)}}
+.page{{max-width:1600px;margin:0 auto}}
+.card{{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:18px;margin-bottom:18px;box-shadow:var(--shadow)}}
+.hero{{background:linear-gradient(135deg,#ffffff 0%,#eef8ff 58%,#f6fffb 100%)}}
+h1,h2,h3{{margin:0 0 12px}}
+h1{{font-size:28px;line-height:1.2}}
+h2{{font-size:19px;margin-top:0}}
+h3{{font-size:15px;margin-bottom:8px}}
+p{{margin:0}}
+ul{{margin:0;padding-left:20px}}
+.muted{{color:var(--muted)}}
+.meta-list{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px 18px;padding:0;list-style:none}}
+.meta-list li{{background:rgba(255,255,255,0.72);border:1px solid var(--border);border-radius:12px;padding:10px 12px}}
+.metric-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}}
+.metric-card{{border:1px solid var(--border);border-radius:14px;padding:14px;background:#fbfdff}}
+.metric-label{{font-size:12px;color:var(--muted);margin-bottom:6px}}
+.metric-value{{font-size:26px;font-weight:700;line-height:1.1}}
+.metric-sub{{font-size:12px;color:var(--muted);margin-top:6px}}
+.metric-card.bad{{background:var(--danger-soft);border-color:#f2c7c3}}
+.metric-card.ok{{background:var(--ok-soft);border-color:#bbe6ca}}
+.metric-card.warn{{background:var(--warning-soft);border-color:#f4d9b3}}
+.tag{{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;border:1px solid transparent}}
+.tag-ok{{color:var(--ok);background:var(--ok-soft);border-color:#bbe6ca}}
+.tag-bad{{color:var(--danger);background:var(--danger-soft);border-color:#f2c7c3}}
+.tag-unknown{{color:var(--warning);background:var(--warning-soft);border-color:#f4d9b3}}
+.tag-info{{color:#155eef;background:#eff4ff;border-color:#c7d7fe}}
+.toolbar{{display:flex;flex-wrap:wrap;align-items:center;gap:10px}}
+.toolbar input,.toolbar select{{border:1px solid #cbd5e1;border-radius:10px;padding:9px 12px;background:#fff;min-height:40px;font:inherit;color:var(--text)}}
+.toolbar input{{min-width:min(340px,100%);flex:1 1 280px}}
+.toolbar button{{border:1px solid #cbd5e1;border-radius:10px;background:#fff;padding:9px 12px;cursor:pointer;font:inherit}}
+.toolbar-stats{{margin-left:auto;color:var(--muted);font-size:13px}}
+.split{{display:grid;grid-template-columns:1.35fr 1fr;gap:18px}}
+.stack{{display:grid;gap:18px}}
+.app-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}}
+.app-summary-scroll{{max-height:720px;overflow-y:auto;overflow-x:hidden;padding-right:6px;scrollbar-gutter:stable}}
+.mini-card{{border:1px solid var(--border);border-radius:14px;padding:14px;background:#fbfdff}}
+.mini-kpis{{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}}
+.mini-kpis span{{font-size:12px;padding:3px 8px;border-radius:999px;background:#eef2ff;color:#334155}}
+.table-wrap{{overflow:auto;border:1px solid var(--border);border-radius:14px;background:#fff}}
+table{{border-collapse:collapse;width:100%;min-width:980px}}
+th,td{{border-bottom:1px solid #e8eef5;padding:9px 10px;text-align:left;font-size:13px;white-space:nowrap;vertical-align:top}}
+thead th{{position:sticky;top:0;background:#f8fbff;z-index:1}}
+tbody tr:hover{{background:#f8fbff}}
+tr.issue-row{{background:#fff9f8}}
+tr.recovered-row{{background:#f4fff7}}
+code{{background:#f2f6fb;padding:2px 6px;border-radius:6px;font-size:12px}}
+.subtle-code{{display:inline-block;background:#f8fafc;color:#334155;border:1px solid #e2e8f0}}
+.error-cell{{white-space:normal!important;overflow-wrap:anywhere;word-break:break-word;min-width:320px;max-width:560px;line-height:1.5}}
+.error-summary-line{{display:block;margin-bottom:3px}}
+.error-summary-line:last-child{{margin-bottom:0}}
+.secondary{{color:var(--muted);font-size:12px}}
+.section-head{{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:12px}}
+.anchor-links{{display:flex;flex-wrap:wrap;gap:8px}}
+.anchor-links a{{display:inline-flex;padding:7px 10px;border-radius:999px;border:1px solid var(--border);background:#fff;color:var(--text);text-decoration:none;font-size:12px}}
+.empty{{padding:18px;color:var(--muted)}}
+img{{display:block}}
+.img-thumb{{border:1px solid #d7e2ee;border-radius:8px;background:#fff}}
+.nowrap{{white-space:nowrap}}
+@media (max-width: 960px) {{
+  body{{padding:16px}}
+  .split{{grid-template-columns:1fr}}
+  .toolbar-stats{{width:100%;margin-left:0}}
+  .meta-list{{grid-template-columns:1fr}}
+}}
+</style>
+</head><body><div class="page">{body}</div>{script}</body></html>"""
 
 
 def status_class(status: str) -> str:
-    if "一致(MATCH)" in status:
+    if GOOD_STATUS in status:
         return "tag-ok"
-    if "不一致(MISMATCH)" in status or "异常(ERROR)" in status:
+    if status in ISSUE_STATUSES:
         return "tag-bad"
     return "tag-unknown"
 
 
+def is_issue_status(status: str) -> bool:
+    return status in ISSUE_STATUSES
+
+
+def is_good_status(status: str) -> bool:
+    return status == GOOD_STATUS
+
+
+def status_priority(status: str) -> int:
+    return STATUS_PRIORITY.get(status, 99)
+
+
+def history_label_priority(label: str) -> int:
+    return HISTORY_LABEL_PRIORITY.get(label, 99)
+
+
+def format_percent(numerator: int, denominator: int) -> str:
+    if denominator <= 0:
+        return "0.0%"
+    return f"{(numerator / denominator) * 100:.1f}%"
+
+
+def clean_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def extract_core_error_text(value: Any) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    signal_pattern = re.compile(
+        r"(AssertionError:|RuntimeError:|ValueError:|TypeError:|KeyError:|ImportError:|FileNotFoundError:|ModuleNotFoundError:|NameError:|Skipped:|(?<![A-Za-z])Error:)"
+    )
+    matches = list(signal_pattern.finditer(text))
+    if matches:
+        text = text[matches[-1].start():]
+    text = text.replace("E       ", "").replace("E   ", "").strip()
+    cut_patterns = [
+        r"\s+E\s+assert\s+.+$",
+        r"\s+\+\s+where\s+.+$",
+        r"\s+tests?/[\w./:-]+.*$",
+    ]
+    for pattern in cut_patterns:
+        text = re.sub(pattern, "", text)
+    return text.strip()
+
+
+def summarize_error_message(value: Any) -> str:
+    core_text = extract_core_error_text(value)
+    if not core_text:
+        return "-"
+
+    assertion_match = re.match(
+        r"^(?P<exc>AssertionError):\s*(?P<case>[^:]+):\s*expected passed=(?P<expected>[^,]+).*?got passed=(?P<actual>[^,]+),\s*basis=(?P<basis>.+)$",
+        core_text,
+    )
+    if assertion_match:
+        case_name = assertion_match.group("case").strip()
+        expected = assertion_match.group("expected").strip()
+        actual = assertion_match.group("actual").strip()
+        basis = assertion_match.group("basis").strip()
+        return "\n".join(
+            [
+                assertion_match.group("exc"),
+                f"用例: {case_name}",
+                f"预期: {expected}",
+                f"实际: {actual}",
+                f"依据: {basis}",
+            ]
+        )
+
+    generic_match = re.match(
+        r"^(?P<exc>AssertionError|RuntimeError|ValueError|TypeError|KeyError|ImportError|FileNotFoundError|ModuleNotFoundError|NameError|Skipped|Error):\s*(?P<message>.+)$",
+        core_text,
+    )
+    if generic_match:
+        exc_name = generic_match.group("exc").strip()
+        message = generic_match.group("message").strip()
+        return "\n".join([exc_name, f"信息: {message}"])
+
+    return core_text
+
+
+def compact_error_summary(value: Any, max_len: int = 180) -> str:
+    summary = clean_text(summarize_error_message(value).replace("\n", " | "))
+    if len(summary) <= max_len:
+        return summary
+    return summary[: max_len - 1] + "…"
+
+
+def readable_timestamp(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def existing_path_str(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        p = Path(raw)
+    except Exception:
+        return ""
+    return str(p.resolve()) if p.exists() else ""
+
+
+@lru_cache(maxsize=None)
+def case_lookup_for_checker(checker: str) -> Dict[tuple[str, str], Path]:
+    root = CASE_JSON_ROOTS.get(checker)
+    if root is None or not root.exists():
+        return {}
+    lookup: Dict[tuple[str, str], Path] = {}
+    for case_file in sorted(root.rglob("*.json")):
+        rel = case_file.relative_to(root)
+        app = rel.parts[0] if len(rel.parts) > 1 else case_file.parent.name
+        lookup[(app.lower(), case_file.stem.lower())] = case_file
+    return lookup
+
+
+def resolve_case_file_for_row(row: Dict[str, Any]) -> Optional[Path]:
+    raw_case_file = str(row.get("case_file", "")).strip()
+    if raw_case_file:
+        case_path = Path(raw_case_file)
+        if case_path.exists():
+            return case_path
+    checker = infer_checker(row)
+    lookup = case_lookup_for_checker(checker)
+    app = str(row.get("app", "")).strip().lower()
+    case_id = str(row.get("case_id", "")).strip().lower()
+    if not case_id:
+        return None
+    if app and (app, case_id) in lookup:
+        return lookup[(app, case_id)]
+    for (lookup_app, lookup_case), path in lookup.items():
+        if lookup_case == case_id and (not app or lookup_app == app):
+            return path
+    return None
+
+
+def resolve_case_image(case_file: Path, raw_path: Any) -> str:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return ""
+    p = Path(raw)
+    if not p.is_absolute():
+        p = (case_file.parent / p).resolve()
+    return str(p) if p.exists() else ""
+
+
 def resolve_output_images(image_output_root: Path, app: str, case_id: str) -> Dict[str, str]:
-    candidates = [image_output_root / app / case_id, image_output_root / app, image_output_root / case_id]
-    image_names = {"preview_template_image": "template.png", "preview_target_image": "target.png", "preview_match_result_image": "match_result.png"}
+    candidates = [
+        image_output_root / app / case_id,
+        image_output_root / app,
+        image_output_root / case_id,
+    ]
+    image_names = {
+        "preview_template_image": "template.png",
+        "preview_target_image": "target.png",
+        "preview_match_result_image": "match_result.png",
+    }
     for base in candidates:
         if not base.exists():
             continue
@@ -260,145 +512,522 @@ def resolve_output_images(image_output_root: Path, app: str, case_id: str) -> Di
     return {key: "" for key in image_names}
 
 
-def _resolve_count_change_image(abs_or_rel_path: str, case_file: Path) -> str:
-    raw = str(abs_or_rel_path or "").strip()
-    if not raw:
-        return ""
-    p = Path(raw)
-    if not p.is_absolute():
-        p = (case_file.parent / p).resolve()
-    return str(p) if p.exists() else ""
-
-
-def enrich_count_change_preview_images(rows: List[Dict[str, Any]]) -> None:
-    case_payload_cache: Dict[str, Dict[str, Any]] = {}
+def repair_preview_images(rows: List[Dict[str, Any]], image_output_root: Path) -> None:
+    payload_cache: Dict[Path, Dict[str, Any]] = {}
     for row in rows:
-        if infer_checker(row) != "count_change":
-            continue
-        if row.get("preview_template_image") and row.get("preview_target_image"):
-            continue
-        case_file_raw = str(row.get("case_file", "")).strip()
-        if not case_file_raw:
-            continue
-        case_file = Path(case_file_raw)
-        if not case_file.exists():
-            continue
-        try:
-            payload = case_payload_cache.get(case_file_raw)
-            if payload is None:
-                with case_file.open("r", encoding="utf-8") as f:
-                    payload = json.load(f)
-                case_payload_cache[case_file_raw] = payload
-            before_path = _resolve_count_change_image(str(payload.get("screenshot_a", "")), case_file)
-            after_path = _resolve_count_change_image(str(payload.get("screenshot_b", "")), case_file)
-            if before_path:
-                row["preview_template_image"] = before_path
-            if after_path:
-                row["preview_target_image"] = after_path
-        except Exception:
-            continue
+        checker = infer_checker(row)
+        case_file = resolve_case_file_for_row(row)
+        existing_template = existing_path_str(row.get("preview_template_image", ""))
+        existing_target = existing_path_str(row.get("preview_target_image", ""))
+        existing_match = existing_path_str(row.get("preview_match_result_image", ""))
+        existing_button_before = existing_path_str(row.get("preview_button_before_image", ""))
+        existing_button_after = existing_path_str(row.get("preview_button_after_image", ""))
 
+        if existing_template:
+            row["preview_template_image"] = existing_template
+        if existing_target:
+            row["preview_target_image"] = existing_target
+        if existing_match:
+            row["preview_match_result_image"] = existing_match
+        if existing_button_before:
+            row["preview_button_before_image"] = existing_button_before
+        if existing_button_after:
+            row["preview_button_after_image"] = existing_button_after
 
-def write_latest_snapshot(rows: List[Dict[str, Any]], run_meta: Dict[str, str], latest_html: Path, checker: str) -> None:
-    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for r in rows:
-        grouped[r["app"]].append(r)
-    match_count = sum(1 for r in rows if r["status"] == "一致(MATCH)")
-    mismatch_count = sum(1 for r in rows if r["status"] == "不一致(MISMATCH)")
-    error_count = sum(1 for r in rows if r["status"] == "异常(ERROR)")
-    skipped_count = sum(1 for r in rows if r["actual_passed"] == "跳过(SKIPPED)")
+        payload: Optional[Dict[str, Any]] = None
+        if case_file is not None:
+            try:
+                payload = payload_cache.get(case_file)
+                if payload is None:
+                    payload = load_case(case_file)
+                    payload_cache[case_file] = payload
+            except Exception:
+                payload = None
 
-    html_parts: List[str] = []
-    latest_html.parent.mkdir(parents=True, exist_ok=True)
-    html_parts.append(f'<div class="card"><h1>最新测试快照 ({escape(checker)})</h1><ul>')
-    html_parts.append(f"<li><strong>运行ID (Run ID)</strong>: <code>{escape(run_meta['run_id'])}</code></li>")
-    html_parts.append(f"<li><strong>运行时间 (UTC)</strong>: <code>{escape(run_meta['run_at'])}</code></li>")
-    html_parts.append(f"<li><strong>Git Branch</strong>: <code>{escape(run_meta['branch'])}</code></li>")
-    html_parts.append(f"<li><strong>Git Commit</strong>: <code>{escape(run_meta['commit'])}</code></li>")
-    html_parts.append(f"<li><strong>备注 (Note)</strong>: {escape(run_meta['note'] or 'N/A')}</li></ul></div>")
+        if payload is not None:
+            if not row.get("preview_template_image"):
+                key = "template_image" if checker == "image_match" else "screenshot_a"
+                row["preview_template_image"] = resolve_case_image(case_file, payload.get(key, ""))
+            if not row.get("preview_target_image"):
+                key = "target_image" if checker == "image_match" else "screenshot_b"
+                row["preview_target_image"] = resolve_case_image(case_file, payload.get(key, ""))
 
-    html_parts.append('<div class="card"><h2>运行结果统计</h2><ul>')
-    html_parts.append(f"<li><strong>总用例数</strong>: {len(rows)}</li>")
-    html_parts.append(f"<li><strong>一致 (MATCH)</strong>: {match_count}</li>")
-    html_parts.append(f"<li><strong>不一致 (MISMATCH)</strong>: {mismatch_count}</li>")
-    html_parts.append(f"<li><strong>异常 (ERROR)</strong>: {error_count}</li>")
-    html_parts.append(f"<li><strong>跳过 (SKIPPED)</strong>: {skipped_count}</li></ul></div>")
+        if checker == "image_match" and not row.get("preview_match_result_image"):
+            row.update({k: v or row.get(k, "") for k, v in resolve_output_images(image_output_root, str(row.get("app", "")), str(row.get("case_id", ""))).items()})
 
-    for app in sorted(grouped.keys()):
-        app_rows = sorted(grouped[app], key=lambda x: x["case_id"])
-        image_headers = "<th>Template</th><th>Target</th><th>Match Result</th>"
         if checker == "button_color":
-            image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
-        elif checker in {"count_change", "progress_change"}:
-            image_headers = "<th>原图 Before</th><th>原图 After</th>"
-        html_parts.append(f'<div class="card"><h2>{escape(app.capitalize())} ({len(app_rows)} 个用例)</h2>')
-        html_parts.append('<div class="table-wrap"><table><thead><tr>'
-                          f"<th>Case ID</th><th>预期</th><th>实际</th><th>状态</th><th>相似度</th><th>预期框</th><th>实际框</th>{image_headers}"
-                          "</tr></thead><tbody>")
-        for row in app_rows:
-            cls = status_class(row["status"])
+            debug_dir = REPO_ROOT / "AIChecker" / "debug" / "crops" / f"{row.get('app', '')}_{row.get('case_id', '')}"
+            before_crop = debug_dir / "button_crop_before.png"
+            after_crop = debug_dir / "button_crop_after.png"
+            if before_crop.exists():
+                row["preview_button_before_image"] = str(before_crop.resolve())
+            if after_crop.exists():
+                row["preview_button_after_image"] = str(after_crop.resolve())
 
-            def render_image_cell(abs_path: str, alt_text: str, *, is_template: bool = False) -> str:
-                if not abs_path:
-                    return "<td>-</td>"
-                rel = os.path.relpath(abs_path, latest_html.parent)
-                href = escape(rel)
-                alt = escape(alt_text)
-                image_style = "width:72px; height:72px; object-fit:contain; background:#fff;" if is_template else "height:72px; max-width:180px; object-fit:contain; background:#fff;"
-                return f'<td><a href="{href}" target="_blank" rel="noopener noreferrer"><img src="{href}" alt="{alt}" style="{image_style} border:1px solid #e5e7eb; border-radius:6px;" /></a></td>'
 
-            html_parts.append("<tr>")
-            html_parts.append(f"<td><code>{escape(row['case_id'])}</code></td><td>{escape(row['expected_passed'])}</td><td>{escape(row['actual_passed'])}</td>")
-            html_parts.append(f'<td><span class="{cls}">{escape(row["status"])}</span></td><td>{escape(row["similarity"] or "-")}</td>')
-            html_parts.append(f"<td><code>{escape(row['expected_bounds'])}</code></td><td><code>{escape(row['actual_bounds'] or '-')}</code></td>")
-            if checker == "button_color":
-                html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} before"))
-                html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
-                html_parts.append(render_image_cell(row.get("preview_button_before_image", ""), f"{row['case_id']} button before", is_template=True))
-                html_parts.append(render_image_cell(row.get("preview_button_after_image", ""), f"{row['case_id']} button after", is_template=True))
-            elif checker in {"count_change", "progress_change"}:
-                html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} before"))
-                html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
+def build_case_history_stats(rows: Iterable[Dict[str, Any]]) -> Dict[tuple[str, str], Dict[str, Any]]:
+    by_case: Dict[tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        key = (str(row.get("app", "")), str(row.get("case_id", "")))
+        by_case[key].append(row)
+
+    stats: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for key, case_rows in by_case.items():
+        ordered = sorted(case_rows, key=lambda item: (str(item.get("run_at", "")), str(item.get("run_id", ""))))
+        statuses = [str(item.get("status", "")) for item in ordered]
+        latest = ordered[-1]
+
+        first_failed_at = ""
+        first_fixed_at = ""
+        failed_seen = False
+        for item in ordered:
+            status = str(item.get("status", ""))
+            if not failed_seen and is_issue_status(status):
+                first_failed_at = str(item.get("run_at", ""))
+                failed_seen = True
+            if failed_seen and is_good_status(status):
+                first_fixed_at = str(item.get("run_at", ""))
+                break
+
+        failure_streak = 0
+        for status in reversed(statuses):
+            if is_issue_status(status):
+                failure_streak += 1
             else:
-                html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} template", is_template=True))
-                html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} target"))
-                html_parts.append(render_image_cell(row.get("preview_match_result_image", ""), f"{row['case_id']} match result"))
-            html_parts.append("</tr>")
-        html_parts.append("</tbody></table></div></div>")
-    latest_html.write_text(html_page(f"最新测试快照({checker})", "".join(html_parts)), encoding="utf-8")
+                break
+
+        last_passed_at = ""
+        last_failed_at = ""
+        for item in reversed(ordered):
+            status = str(item.get("status", ""))
+            if not last_passed_at and is_good_status(status):
+                last_passed_at = str(item.get("run_at", ""))
+            if not last_failed_at and is_issue_status(status):
+                last_failed_at = str(item.get("run_at", ""))
+            if last_passed_at and last_failed_at:
+                break
+
+        recent_statuses = statuses[-5:]
+        recent_buckets = [
+            "good" if is_good_status(status) else "issue" if is_issue_status(status) else "other"
+            for status in recent_statuses
+        ]
+        recent_flip_count = sum(1 for prev, cur in zip(recent_buckets, recent_buckets[1:]) if prev != cur)
+
+        stats[key] = {
+            "case_id": key[1],
+            "app": key[0],
+            "total_runs": len(ordered),
+            "latest_status": str(latest.get("status", "")),
+            "latest_run_id": str(latest.get("run_id", "")),
+            "latest_run_at": str(latest.get("run_at", "")),
+            "first_failed_at": first_failed_at,
+            "first_fixed_at": first_fixed_at,
+            "last_passed_at": last_passed_at,
+            "last_failed_at": last_failed_at,
+            "failure_streak": failure_streak,
+            "recent_flip_count": recent_flip_count,
+            "recent_statuses": recent_statuses,
+        }
+    return stats
+
+
+def infer_history_label(current_status: str, previous_status: str, recent_flip_count: int) -> str:
+    if is_issue_status(current_status):
+        if is_good_status(previous_status):
+            return "新回归"
+        if is_issue_status(previous_status):
+            return "持续失败"
+        if current_status == "异常(ERROR)":
+            return "首次异常"
+        return "首次失败"
+    if is_good_status(current_status):
+        if is_issue_status(previous_status):
+            return "已修复"
+        if is_good_status(previous_status):
+            if recent_flip_count > 0:
+                return "波动中"
+            return "稳定通过"
+        return "首次通过"
+    return "待确认"
+
+
+def enrich_rows_with_history(rows: List[Dict[str, Any]], history_rows: List[Dict[str, Any]], current_run_id: str) -> None:
+    history_by_case: Dict[tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for row in history_rows:
+        if str(row.get("run_id", "")) == current_run_id:
+            continue
+        key = (str(row.get("app", "")), str(row.get("case_id", "")))
+        history_by_case[key].append(row)
+
+    history_stats = build_case_history_stats(history_rows)
+    for row in rows:
+        key = (str(row.get("app", "")), str(row.get("case_id", "")))
+        previous_rows = sorted(
+            history_by_case.get(key, []),
+            key=lambda item: (str(item.get("run_at", "")), str(item.get("run_id", ""))),
+        )
+        previous = previous_rows[-1] if previous_rows else {}
+        previous_status = str(previous.get("status", ""))
+
+        combined_recent = previous_rows[-4:] + [row]
+        combined_stats = build_case_history_stats(combined_recent).get(key, {})
+        recent_flip_count = int(combined_stats.get("recent_flip_count", 0))
+        failure_streak = int(combined_stats.get("failure_streak", 0))
+
+        label = infer_history_label(str(row.get("status", "")), previous_status, recent_flip_count)
+        row["history_label"] = label
+        row["previous_status"] = previous_status or "-"
+        row["last_good_at"] = combined_stats.get("last_passed_at", "") or "-"
+        row["last_issue_at"] = combined_stats.get("last_failed_at", "") or "-"
+        row["failure_streak"] = str(failure_streak if failure_streak else "")
+        row["recent_flip_count"] = str(recent_flip_count if recent_flip_count else "")
+        row["error_summary"] = summarize_error_message(row.get("error", ""))
+        row["error_signature"] = compact_error_summary(row.get("error", ""))
+
+        reference_stats = history_stats.get(key, {})
+        if not row.get("last_good_at") or row["last_good_at"] == "-":
+            row["last_good_at"] = reference_stats.get("last_passed_at", "") or "-"
+        if not row.get("last_issue_at") or row["last_issue_at"] == "-":
+            row["last_issue_at"] = reference_stats.get("last_failed_at", "") or "-"
+
+
+def sort_rows_for_display(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(
+        rows,
+        key=lambda row: (
+            status_priority(str(row.get("status", ""))),
+            history_label_priority(str(row.get("history_label", "N/A"))),
+            str(row.get("app", "")).lower(),
+            str(row.get("case_id", "")).lower(),
+        ),
+    )
+
+
+def count_rows(rows: Iterable[Dict[str, Any]]) -> Dict[str, int]:
+    rows_list = list(rows)
+    return {
+        "total": len(rows_list),
+        "match": sum(1 for row in rows_list if str(row.get("status", "")) == GOOD_STATUS),
+        "mismatch": sum(1 for row in rows_list if str(row.get("status", "")) == "不一致(MISMATCH)"),
+        "error": sum(1 for row in rows_list if str(row.get("status", "")) == "异常(ERROR)"),
+        "skipped": sum(1 for row in rows_list if str(row.get("actual_passed", "")) == "跳过(SKIPPED)"),
+        "unknown": sum(1 for row in rows_list if str(row.get("status", "")) in UNKNOWN_STATUSES),
+        "issues": sum(1 for row in rows_list if is_issue_status(str(row.get("status", "")))),
+    }
+
+
+def render_metric_grid(metrics: List[Dict[str, str]]) -> str:
+    cards = []
+    for metric in metrics:
+        variant = metric.get("variant", "")
+        cards.append(
+            f'<div class="metric-card {escape(variant)}">'
+            f'<div class="metric-label">{escape(metric["label"])}</div>'
+            f'<div class="metric-value">{escape(metric["value"])}</div>'
+            f'<div class="metric-sub">{escape(metric.get("sub", ""))}</div>'
+            "</div>"
+        )
+    return '<div class="metric-grid">' + "".join(cards) + "</div>"
+
+
+def render_filter_controls(scope: str, rows: Iterable[Dict[str, Any]], placeholder: str) -> str:
+    rows_list = list(rows)
+    apps = sorted({str(row.get("app", "")).strip() for row in rows_list if str(row.get("app", "")).strip()})
+    statuses = sorted({str(row.get("status", "")).strip() for row in rows_list if str(row.get("status", "")).strip()}, key=status_priority)
+    history_labels = sorted(
+        {str(row.get("history_label", "")).strip() for row in rows_list if str(row.get("history_label", "")).strip()},
+        key=history_label_priority,
+    )
+    app_options = "".join(f'<option value="{escape(app)}">{escape(app)}</option>' for app in apps)
+    status_options = "".join(f'<option value="{escape(status)}">{escape(status)}</option>' for status in statuses)
+    history_options = "".join(f'<option value="{escape(label)}">{escape(label)}</option>' for label in history_labels)
+    return (
+        '<div class="card"><div class="section-head">'
+        '<div><h2>快速筛选</h2><p class="muted">支持按应用、状态、历史标签和关键字过滤，排查大批量结果更快。</p></div>'
+        "</div>"
+        f'<div class="toolbar" data-filter-scope="{escape(scope)}">'
+        f'<input type="search" data-filter-input="{escape(scope)}" placeholder="{escape(placeholder)}" />'
+        f'<select data-filter-app="{escape(scope)}"><option value="">全部应用</option>{app_options}</select>'
+        f'<select data-filter-status="{escape(scope)}"><option value="">全部状态</option>{status_options}</select>'
+        f'<select data-filter-history="{escape(scope)}"><option value="">全部历史标签</option>{history_options}</select>'
+        f'<button type="button" data-filter-reset="{escape(scope)}">重置</button>'
+        f'<div class="toolbar-stats">显示 <strong data-filter-count="{escape(scope)}">{len(rows_list)}</strong> / <strong data-filter-total="{escape(scope)}">{len(rows_list)}</strong></div>'
+        "</div></div>"
+    )
+
+
+def build_filter_script() -> str:
+    return """<script>
+document.addEventListener("DOMContentLoaded", function () {
+  function apply(scope) {
+    const input = document.querySelector('[data-filter-input="' + scope + '"]');
+    const app = document.querySelector('[data-filter-app="' + scope + '"]');
+    const status = document.querySelector('[data-filter-status="' + scope + '"]');
+    const history = document.querySelector('[data-filter-history="' + scope + '"]');
+    const rows = Array.from(document.querySelectorAll('tr[data-row-scope="' + scope + '"]'));
+    let visible = 0;
+    rows.forEach(function (row) {
+      const haystack = [
+        row.dataset.app || "",
+        row.dataset.case || "",
+        row.dataset.status || "",
+        row.dataset.history || "",
+        row.dataset.error || ""
+      ].join(" ").toLowerCase();
+      const textOk = !input || !input.value || haystack.includes(input.value.toLowerCase());
+      const appOk = !app || !app.value || row.dataset.app === app.value;
+      const statusOk = !status || !status.value || row.dataset.status === status.value;
+      const historyOk = !history || !history.value || row.dataset.history === history.value;
+      const show = textOk && appOk && statusOk && historyOk;
+      row.hidden = !show;
+      if (show) visible += 1;
+    });
+    document.querySelectorAll('[data-app-card="' + scope + '"]').forEach(function (card) {
+      const hasVisible = card.querySelector('tr[data-row-scope="' + scope + '"]:not([hidden])');
+      card.hidden = !hasVisible;
+    });
+    const countNode = document.querySelector('[data-filter-count="' + scope + '"]');
+    if (countNode) countNode.textContent = String(visible);
+  }
+
+  document.querySelectorAll('[data-filter-scope]').forEach(function (toolbar) {
+    const scope = toolbar.dataset.filterScope;
+    ["input", "change"].forEach(function (eventName) {
+      toolbar.querySelectorAll("input,select").forEach(function (node) {
+        node.addEventListener(eventName, function () { apply(scope); });
+      });
+    });
+    const reset = toolbar.querySelector('[data-filter-reset="' + scope + '"]');
+    if (reset) {
+      reset.addEventListener("click", function () {
+        toolbar.querySelectorAll("input").forEach(function (node) { node.value = ""; });
+        toolbar.querySelectorAll("select").forEach(function (node) { node.value = ""; });
+        apply(scope);
+      });
+    }
+    apply(scope);
+  });
+});
+</script>"""
+
+
+def render_image_cell(page_dir: Path, image_path: Any, alt_text: str, *, is_template: bool = False) -> str:
+    existing = existing_path_str(image_path)
+    if not existing:
+        return "<td>-</td>"
+    try:
+        href = os.path.relpath(existing, page_dir)
+    except ValueError:
+        href = existing
+    style = (
+        "width:72px;height:72px;object-fit:contain;background:#fff;"
+        if is_template
+        else "height:72px;max-width:180px;object-fit:contain;background:#fff;"
+    )
+    return (
+        f'<td><a href="{escape(href)}" target="_blank" rel="noopener noreferrer">'
+        f'<img class="img-thumb" src="{escape(href)}" alt="{escape(alt_text)}" style="{style}" /></a></td>'
+    )
+
+
+def row_data_attrs(row: Dict[str, Any], scope: str) -> str:
+    return (
+        f'data-row-scope="{escape(scope)}" '
+        f'data-app="{escape(str(row.get("app", "")))}" '
+        f'data-case="{escape(str(row.get("case_id", "")))}" '
+        f'data-status="{escape(str(row.get("status", "")))}" '
+        f'data-history="{escape(str(row.get("history_label", "")))}" '
+        f'data-error="{escape(clean_text(str(row.get("error_summary", ""))))}"'
+    )
+
+
+def row_css_class(row: Dict[str, Any]) -> str:
+    if is_issue_status(str(row.get("status", ""))):
+        return "issue-row"
+    if str(row.get("history_label", "")) == "已修复":
+        return "recovered-row"
+    return ""
+
+
+def app_summary_cards(rows: List[Dict[str, Any]]) -> str:
+    by_app: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_app[str(row.get("app", ""))].append(row)
+    cards = []
+    for app, app_rows in sorted(by_app.items(), key=lambda item: (-sum(1 for row in item[1] if is_issue_status(str(row.get("status", "")))), item[0].lower())):
+        counts = count_rows(app_rows)
+        cards.append(
+            '<div class="mini-card">'
+            f"<h3>{escape(app)}</h3>"
+            f'<p class="muted">{counts["total"]} 个用例，问题率 {escape(format_percent(counts["issues"], max(counts["total"], 1)))}</p>'
+            '<div class="mini-kpis">'
+            f'<span>问题 {counts["issues"]}</span>'
+            f'<span>一致 {counts["match"]}</span>'
+            f'<span>跳过 {counts["skipped"]}</span>'
+            "</div></div>"
+        )
+    if not cards:
+        return '<div class="empty">暂无应用统计。</div>'
+    return '<div class="app-summary-scroll"><div class="app-grid">' + "".join(cards) + "</div></div>"
+
+
+def render_error_summary_cell(row: Dict[str, Any]) -> str:
+    summary = str(row.get("error_summary", "-") or "-")
+    full_error = clean_text(str(row.get("error", "") or "-"))
+    summary_lines = "".join(
+        f'<span class="error-summary-line">{escape(line)}</span>'
+        for line in summary.splitlines()
+        if line.strip()
+    )
+    if not summary_lines:
+        summary_lines = '<span class="error-summary-line">-</span>'
+    return f'<td class="error-cell" title="{escape(full_error or "-")}">{summary_lines}</td>'
+
+
+def issue_digest_table(rows: List[Dict[str, Any]], page_dir: Path, checker: str, scope: str) -> str:
+    bad_rows = [row for row in sort_rows_for_display(rows) if is_issue_status(str(row.get("status", "")))]
+    image_headers = "<th>Template</th><th>Target</th><th>Match Result</th>"
+    if checker == "button_color":
+        image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
+    elif checker in {"count_change", "progress_change"}:
+        image_headers = "<th>原图 Before</th><th>原图 After</th>"
+
+    parts = [
+        '<div class="card"><div class="section-head">'
+        '<div><h2>优先关注问题</h2><p class="muted">按严重性和历史标签排序，优先把新回归和持续失败排到前面。</p></div>'
+        f'<div class="anchor-links"><a href="#all-details">跳到全量明细</a></div></div>'
+        '<div class="table-wrap"><table><thead><tr>'
+        "<th>App</th><th>Case ID</th><th>历史标签</th><th>状态</th><th>最近通过</th><th>错误摘要</th>"
+        f"{image_headers}</tr></thead><tbody>"
+    ]
+    if not bad_rows:
+        parts.append('<tr><td colspan="10">当前运行无不一致/异常</td></tr>')
+    else:
+        for row in bad_rows:
+            cls = status_class(str(row.get("status", "")))
+            attrs = row_data_attrs(row, scope)
+            tr_class = row_css_class(row)
+            parts.append(f'<tr class="{escape(tr_class)}" {attrs}>')
+            parts.append(f"<td>{escape(str(row.get('app', '')))}</td>")
+            parts.append(f"<td><code>{escape(str(row.get('case_id', '')))}</code></td>")
+            parts.append(f'<td><span class="tag tag-info">{escape(str(row.get("history_label", "N/A")))}</span></td>')
+            parts.append(f'<td><span class="tag {cls}">{escape(str(row.get("status", "")))}</span></td>')
+            parts.append(f"<td>{escape(readable_timestamp(str(row.get('last_good_at', '-'))))}</td>")
+            parts.append(render_error_summary_cell(row))
+            if checker == "button_color":
+                parts.append(render_image_cell(page_dir, row.get("preview_template_image", ""), f"{row.get('case_id', '')} before"))
+                parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
+                parts.append(render_image_cell(page_dir, row.get("preview_button_before_image", ""), f"{row.get('case_id', '')} button before", is_template=True))
+                parts.append(render_image_cell(page_dir, row.get("preview_button_after_image", ""), f"{row.get('case_id', '')} button after", is_template=True))
+            elif checker in {"count_change", "progress_change"}:
+                parts.append(render_image_cell(page_dir, row.get("preview_template_image", ""), f"{row.get('case_id', '')} before"))
+                parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
+            else:
+                parts.append(render_image_cell(page_dir, row.get("preview_template_image", ""), f"{row.get('case_id', '')} template", is_template=True))
+                parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} target"))
+                parts.append(render_image_cell(page_dir, row.get("preview_match_result_image", ""), f"{row.get('case_id', '')} match result"))
+            parts.append("</tr>")
+    parts.append("</tbody></table></div></div>")
+    return "".join(parts)
+
+
+def render_detail_tables(rows: List[Dict[str, Any]], page_dir: Path, checker: str, scope: str) -> str:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row.get("app", ""))].append(row)
+
+    image_headers = "<th>Template</th><th>Target</th><th>Match Result</th>"
+    no_data_colspan = 15
+    if checker == "button_color":
+        image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
+        no_data_colspan = 16
+    elif checker in {"count_change", "progress_change"}:
+        image_headers = "<th>原图 Before</th><th>原图 After</th>"
+        no_data_colspan = 14
+
+    parts = ['<div class="card" id="all-details"><div class="section-head"><div><h2>全量明细</h2><p class="muted">问题会排在每个应用的前面，便于边筛选边比对截图。</p></div></div></div>']
+    for app in sorted(grouped.keys(), key=lambda name: (-sum(1 for row in grouped[name] if is_issue_status(str(row.get("status", "")))), name.lower())):
+        app_rows = sort_rows_for_display(grouped[app])
+        parts.append(
+            f'<div class="card" data-app-card="{escape(scope)}"><div class="section-head">'
+            f'<div><h2>{escape(app)} ({len(app_rows)} 个用例)</h2>'
+            f'<p class="muted">问题 {sum(1 for row in app_rows if is_issue_status(str(row.get("status", ""))))}，一致 {sum(1 for row in app_rows if str(row.get("status", "")) == GOOD_STATUS)}</p></div>'
+            "</div>"
+        )
+        parts.append(
+            '<div class="table-wrap"><table><thead><tr>'
+            "<th>Case ID</th><th>历史标签</th><th>预期</th><th>实际</th><th>状态</th><th>相似度</th>"
+            "<th>阈值</th><th>预期框</th><th>实际框</th><th>错误摘要</th><th>最近通过</th>"
+            f"{image_headers}</tr></thead><tbody>"
+        )
+        if not app_rows:
+            parts.append(f'<tr><td colspan="{no_data_colspan}">暂无数据</td></tr>')
+        else:
+            for row in app_rows:
+                cls = status_class(str(row.get("status", "")))
+                tr_class = row_css_class(row)
+                attrs = row_data_attrs(row, scope)
+                parts.append(f'<tr class="{escape(tr_class)}" {attrs}>')
+                parts.append(f"<td><code>{escape(str(row.get('case_id', '')))}</code></td>")
+                parts.append(f'<td><span class="tag tag-info">{escape(str(row.get("history_label", "N/A")))}</span></td>')
+                parts.append(f"<td>{escape(str(row.get('expected_passed', '')))}</td>")
+                parts.append(f"<td>{escape(str(row.get('actual_passed', '')))}</td>")
+                parts.append(f'<td><span class="tag {cls}">{escape(str(row.get("status", "")))}</span></td>')
+                parts.append(f"<td>{escape(str(row.get('similarity', '') or '-'))}</td>")
+                parts.append(f"<td>{escape(str(row.get('threshold', '') or '-'))}</td>")
+                parts.append(f"<td><code>{escape(str(row.get('expected_bounds', '') or '-'))}</code></td>")
+                parts.append(f"<td><code>{escape(str(row.get('actual_bounds', '') or '-'))}</code></td>")
+                parts.append(render_error_summary_cell(row))
+                parts.append(f"<td>{escape(readable_timestamp(str(row.get('last_good_at', '-'))))}</td>")
+                if checker == "button_color":
+                    parts.append(render_image_cell(page_dir, row.get("preview_template_image", ""), f"{row.get('case_id', '')} before"))
+                    parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
+                    parts.append(render_image_cell(page_dir, row.get("preview_button_before_image", ""), f"{row.get('case_id', '')} button before", is_template=True))
+                    parts.append(render_image_cell(page_dir, row.get("preview_button_after_image", ""), f"{row.get('case_id', '')} button after", is_template=True))
+                elif checker in {"count_change", "progress_change"}:
+                    parts.append(render_image_cell(page_dir, row.get("preview_template_image", ""), f"{row.get('case_id', '')} before"))
+                    parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
+                else:
+                    parts.append(render_image_cell(page_dir, row.get("preview_template_image", ""), f"{row.get('case_id', '')} template", is_template=True))
+                    parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} target"))
+                    parts.append(render_image_cell(page_dir, row.get("preview_match_result_image", ""), f"{row.get('case_id', '')} match result"))
+                parts.append("</tr>")
+        parts.append("</tbody></table></div></div>")
+    return "".join(parts)
 
 
 def read_history_rows(checker: str) -> List[Dict[str, str]]:
     paths = history_paths_for_checker(checker)
     split_rows = _read_csv_rows_if_exists(paths["results_csv"])
-    legacy_rows = [r for r in _read_csv_rows_if_exists(LEGACY_RESULTS_CSV) if infer_checker(r) == checker]
+    legacy_rows = [row for row in _read_csv_rows_if_exists(LEGACY_RESULTS_CSV) if infer_checker(row) == checker]
     return split_rows + legacy_rows
 
 
 def load_latest_run_rows_from_history(checker: str) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
     paths = history_paths_for_checker(checker)
     run_rows = _read_csv_rows_if_exists(paths["runs_csv"])
-    if not run_rows:
-        run_rows = []
     all_results = _read_csv_rows_if_exists(paths["results_csv"])
 
-    # Backward compatibility: legacy shared CSV files.
-    run_rows.extend([r for r in _read_csv_rows_if_exists(LEGACY_RUNS_CSV) if _run_row_matches_checker(r, checker)])
-    all_results.extend([r for r in _read_csv_rows_if_exists(LEGACY_RESULTS_CSV) if infer_checker(r) == checker])
+    run_rows.extend([row for row in _read_csv_rows_if_exists(LEGACY_RUNS_CSV) if _run_row_matches_checker(row, checker)])
+    all_results.extend([row for row in _read_csv_rows_if_exists(LEGACY_RESULTS_CSV) if infer_checker(row) == checker])
 
     if not run_rows or not all_results:
         return [], {}
+
     by_run: Dict[str, List[Dict[str, str]]] = defaultdict(list)
-    for r in all_results:
-        if infer_checker(r) != checker:
+    for row in all_results:
+        if infer_checker(row) != checker:
             continue
-        rid = r.get("run_id", "")
-        if rid:
-            by_run[rid].append(r)
-    candidate_runs = [r for r in run_rows if r.get("run_id") in by_run]
+        run_id = row.get("run_id", "")
+        if run_id:
+            by_run[run_id].append(row)
+
+    candidate_runs = [row for row in run_rows if row.get("run_id") in by_run]
     if not candidate_runs:
         return [], {}
-    pytest_candidates = [r for r in candidate_runs if "pytest" in str(r.get("note", "")).lower()]
+
+    pytest_candidates = [row for row in candidate_runs if "pytest" in str(row.get("note", "")).lower()]
     latest_run = pytest_candidates[-1] if pytest_candidates else candidate_runs[-1]
     result_rows = by_run.get(latest_run.get("run_id", ""), [])
     run_meta = {
@@ -411,111 +1040,251 @@ def load_latest_run_rows_from_history(checker: str) -> tuple[List[Dict[str, Any]
     return result_rows, run_meta
 
 
+def write_latest_snapshot(rows: List[Dict[str, Any]], run_meta: Dict[str, str], latest_html: Path, checker: str) -> None:
+    counts = count_rows(rows)
+    latest_html.parent.mkdir(parents=True, exist_ok=True)
+    scope = "snapshot"
+    new_regressions = sum(1 for row in rows if str(row.get("history_label", "")) == "新回归")
+    recovered = sum(1 for row in rows if str(row.get("history_label", "")) == "已修复")
+    flaky_rows = sum(1 for row in rows if str(row.get("recent_flip_count", "")).strip())
+
+    body_parts = [
+        '<div class="card hero"><div class="section-head">'
+        f'<div><h1>最新测试快照 ({escape(checker)})</h1><p class="muted">先看本次是否出现新回归，再快速下钻到具体应用和截图。</p></div>'
+        '<div class="anchor-links"><a href="#all-details">全量明细</a><a href="FAILURE_VIEW.html">问题视图</a><a href="HISTORY_TIMELINE.html">历史时间线</a></div>'
+        "</div>"
+        '<ul class="meta-list">'
+        f"<li><strong>运行 ID</strong><br /><code>{escape(run_meta['run_id'])}</code></li>"
+        f"<li><strong>运行时间</strong><br />{escape(readable_timestamp(run_meta['run_at']))}</li>"
+        f"<li><strong>Git Branch</strong><br /><code>{escape(run_meta['branch'])}</code></li>"
+        f"<li><strong>Git Commit</strong><br /><code>{escape(run_meta['commit'])}</code></li>"
+        f"<li><strong>备注</strong><br />{escape(run_meta['note'] or 'N/A')}</li>"
+        "</ul></div>"
+    ]
+
+    body_parts.append(
+        render_metric_grid(
+            [
+                {"label": "总用例数", "value": str(counts["total"]), "sub": f"覆盖 {len({str(row.get('app', '')) for row in rows})} 个应用"},
+                {"label": "一致率", "value": format_percent(counts["match"], max(counts["total"], 1)), "sub": f"一致 {counts['match']} / 总计 {counts['total']}", "variant": "ok"},
+                {"label": "问题数", "value": str(counts["issues"]), "sub": f"不一致 {counts['mismatch']}，异常 {counts['error']}", "variant": "bad"},
+                {"label": "新回归", "value": str(new_regressions), "sub": "上次通过，这次失败/异常", "variant": "bad"},
+                {"label": "已修复", "value": str(recovered), "sub": "上次失败/异常，这次恢复一致", "variant": "ok"},
+                {"label": "最近波动", "value": str(flaky_rows), "sub": "最近 5 次运行中状态发生切换", "variant": "warn"},
+            ]
+        )
+    )
+
+    body_parts.append(
+        '<div class="split">'
+        f'<div class="stack">{issue_digest_table(rows, latest_html.parent, checker, scope)}</div>'
+        f'<div class="stack"><div class="card"><h2>按应用概览</h2><p class="muted">优先把问题多的应用放在前面。</p>{app_summary_cards(rows)}</div></div>'
+        "</div>"
+    )
+    body_parts.append(render_filter_controls(scope, rows, "搜索 app / case / 状态 / 错误摘要"))
+    body_parts.append(render_detail_tables(rows, latest_html.parent, checker, scope))
+    latest_html.write_text(html_page(f"最新测试快照({checker})", "".join(body_parts), build_filter_script()), encoding="utf-8")
+
+
 def write_history_timeline(checker: str, timeline_html: Path) -> None:
     rows = read_history_rows(checker)
-    by_case: Dict[str, List[Dict[str, str]]] = defaultdict(list)
-    for row in rows:
-        by_case[row["case_id"]].append(row)
-    html_parts: List[str] = []
     timeline_html.parent.mkdir(parents=True, exist_ok=True)
-    html_parts.append(f'<div class="card"><h1>测试历史时间线 ({escape(checker)})</h1><p class="muted">按每次运行跟踪每个用例结果，并展示失败到通过的变化。</p></div>')
-    html_parts.append('<div class="card"><h2>用例修复追踪</h2><div class="table-wrap"><table><thead><tr>'
-                      "<th>Case ID</th><th>首次失败时间</th><th>首次修复通过时间</th><th>最新状态</th><th>最新运行ID</th>"
-                      "</tr></thead><tbody>")
-    for case_id in sorted(by_case.keys()):
-        case_rows = sorted(by_case[case_id], key=lambda x: x["run_at"])
-        first_failed_at = ""
-        first_fixed_at = ""
-        failed_seen = False
-        for row in case_rows:
-            is_bad = row["status"] in ("不一致(MISMATCH)", "异常(ERROR)")
-            is_good = row["status"] == "一致(MATCH)"
-            if not failed_seen and is_bad:
-                first_failed_at = row["run_at"]
-                failed_seen = True
-            if failed_seen and is_good:
-                first_fixed_at = row["run_at"]
-                break
-        latest = case_rows[-1]
-        cls = status_class(latest["status"])
-        html_parts.append(f"<tr><td><code>{escape(case_id)}</code></td><td>{escape(first_failed_at or '-')}</td><td>{escape(first_fixed_at or '-')}</td><td><span class=\"{cls}\">{escape(latest['status'])}</span></td><td><code>{escape(latest['run_id'])}</code></td></tr>")
-    html_parts.append("</tbody></table></div></div>")
-    html_parts.append('<div class="card"><h2>最近运行明细（最近 200 条）</h2><div class="table-wrap"><table><thead><tr>'
-                      "<th>运行时间</th><th>运行ID</th><th>App</th><th>Case ID</th><th>预期</th><th>实际</th><th>状态</th>"
-                      "</tr></thead><tbody>")
-    for row in rows[-200:]:
-        cls = status_class(row["status"])
-        html_parts.append(f"<tr><td>{escape(row['run_at'])}</td><td><code>{escape(row['run_id'])}</code></td><td>{escape(row['app'])}</td><td><code>{escape(row['case_id'])}</code></td><td>{escape(row['expected_passed'])}</td><td>{escape(row['actual_passed'])}</td><td><span class=\"{cls}\">{escape(row['status'])}</span></td></tr>")
-    html_parts.append("</tbody></table></div></div>")
-    timeline_html.write_text(html_page(f"测试历史时间线({checker})", "".join(html_parts)), encoding="utf-8")
+    history_stats = build_case_history_stats(rows)
+    runs = sorted({(str(row.get("run_id", "")), str(row.get("run_at", ""))) for row in rows})
+    latest_run_id = runs[-1][0] if runs else ""
+    latest_run_at = runs[-1][1] if runs else ""
+    latest_rows = [row for row in rows if str(row.get("run_id", "")) == latest_run_id]
+    latest_counts = count_rows(latest_rows)
+
+    persistent_failures = [
+        stat for stat in history_stats.values() if is_issue_status(str(stat.get("latest_status", ""))) and int(stat.get("failure_streak", 0)) >= 2
+    ]
+    unstable_cases = [stat for stat in history_stats.values() if int(stat.get("recent_flip_count", 0)) > 0]
+    repaired_cases = [
+        stat for stat in history_stats.values() if str(stat.get("latest_status", "")) == GOOD_STATUS and str(stat.get("last_failed_at", ""))
+    ]
+    repaired_cases = sorted(repaired_cases, key=lambda stat: str(stat.get("latest_run_at", "")), reverse=True)[:20]
+
+    body_parts = [
+        '<div class="card hero"><div class="section-head">'
+        f'<div><h1>测试历史时间线 ({escape(checker)})</h1><p class="muted">看清哪些问题是新回归，哪些是长期未修，以及哪些用例本身不稳定。</p></div>'
+        '<div class="anchor-links"><a href="#persistent-failures">持续失败</a><a href="#repair-tracking">修复追踪</a><a href="#recent-details">最近明细</a></div>'
+        "</div></div>"
+    ]
+    body_parts.append(
+        render_metric_grid(
+            [
+                {"label": "历史运行次数", "value": str(len(runs)), "sub": f"最近一次: {readable_timestamp(latest_run_at)}"},
+                {"label": "累计用例数", "value": str(len(history_stats)), "sub": f"当前最新运行 ID: {latest_run_id or '-'}"},
+                {"label": "最新运行问题数", "value": str(latest_counts["issues"]), "sub": f"不一致 {latest_counts['mismatch']}，异常 {latest_counts['error']}", "variant": "bad"},
+                {"label": "持续失败用例", "value": str(len(persistent_failures)), "sub": "连续至少 2 次失败/异常", "variant": "warn"},
+                {"label": "波动用例", "value": str(len(unstable_cases)), "sub": "最近 5 次运行有状态切换", "variant": "warn"},
+                {"label": "已修复用例", "value": str(len(repaired_cases)), "sub": "历史出现过问题，当前已恢复一致", "variant": "ok"},
+            ]
+        )
+    )
+
+    body_parts.append(f'<div class="card" id="persistent-failures"><h2>持续失败用例</h2><p class="muted">这类问题通常优先级最高，因为它们不是偶发波动。</p>')
+    body_parts.append('<div class="table-wrap"><table><thead><tr><th>App</th><th>Case ID</th><th>连续失败次数</th><th>最近通过时间</th><th>最新状态</th><th>最新运行 ID</th></tr></thead><tbody>')
+    if not persistent_failures:
+        body_parts.append('<tr><td colspan="6">当前没有连续失败 2 次及以上的用例。</td></tr>')
+    else:
+        for stat in sorted(persistent_failures, key=lambda item: (-int(item.get("failure_streak", 0)), str(item.get("app", "")).lower(), str(item.get("case_id", "")).lower())):
+            cls = status_class(str(stat.get("latest_status", "")))
+            body_parts.append(
+                "<tr>"
+                f"<td>{escape(str(stat.get('app', '')))}</td>"
+                f"<td><code>{escape(str(stat.get('case_id', '')))}</code></td>"
+                f"<td>{escape(str(stat.get('failure_streak', '0')))}</td>"
+                f"<td>{escape(readable_timestamp(str(stat.get('last_passed_at', ''))))}</td>"
+                f'<td><span class="tag {cls}">{escape(str(stat.get("latest_status", "")))}</span></td>'
+                f"<td><code>{escape(str(stat.get('latest_run_id', '')))}</code></td>"
+                "</tr>"
+            )
+    body_parts.append("</tbody></table></div></div>")
+
+    body_parts.append('<div class="card"><h2>最近波动用例</h2><p class="muted">如果一个用例频繁在通过和失败之间切换，通常意味着阈值、样本或环境稳定性需要复查。</p>')
+    body_parts.append('<div class="table-wrap"><table><thead><tr><th>App</th><th>Case ID</th><th>最近 5 次切换次数</th><th>最近失败时间</th><th>最近通过时间</th><th>最新状态</th></tr></thead><tbody>')
+    if not unstable_cases:
+        body_parts.append('<tr><td colspan="6">当前没有检测到最近 5 次内发生状态切换的用例。</td></tr>')
+    else:
+        for stat in sorted(unstable_cases, key=lambda item: (-int(item.get("recent_flip_count", 0)), str(item.get("app", "")).lower(), str(item.get("case_id", "")).lower()))[:50]:
+            cls = status_class(str(stat.get("latest_status", "")))
+            body_parts.append(
+                "<tr>"
+                f"<td>{escape(str(stat.get('app', '')))}</td>"
+                f"<td><code>{escape(str(stat.get('case_id', '')))}</code></td>"
+                f"<td>{escape(str(stat.get('recent_flip_count', '0')))}</td>"
+                f"<td>{escape(readable_timestamp(str(stat.get('last_failed_at', ''))))}</td>"
+                f"<td>{escape(readable_timestamp(str(stat.get('last_passed_at', ''))))}</td>"
+                f'<td><span class="tag {cls}">{escape(str(stat.get("latest_status", "")))}</span></td>'
+                "</tr>"
+            )
+    body_parts.append("</tbody></table></div></div>")
+
+    body_parts.append(f'<div class="card" id="repair-tracking"><h2>用例修复追踪</h2><p class="muted">关注首次失败、首次修复以及当前状态，适合回看修复过程。</p>')
+    body_parts.append('<div class="table-wrap"><table><thead><tr><th>App</th><th>Case ID</th><th>首次失败时间</th><th>首次修复通过时间</th><th>总运行次数</th><th>最新状态</th><th>最新运行 ID</th></tr></thead><tbody>')
+    for key in sorted(history_stats.keys(), key=lambda item: (item[0].lower(), item[1].lower())):
+        stat = history_stats[key]
+        cls = status_class(str(stat.get("latest_status", "")))
+        body_parts.append(
+            "<tr>"
+            f"<td>{escape(str(stat.get('app', '')))}</td>"
+            f"<td><code>{escape(str(stat.get('case_id', '')))}</code></td>"
+            f"<td>{escape(readable_timestamp(str(stat.get('first_failed_at', ''))))}</td>"
+            f"<td>{escape(readable_timestamp(str(stat.get('first_fixed_at', ''))))}</td>"
+            f"<td>{escape(str(stat.get('total_runs', '0')))}</td>"
+            f'<td><span class="tag {cls}">{escape(str(stat.get("latest_status", "")))}</span></td>'
+            f"<td><code>{escape(str(stat.get('latest_run_id', '')))}</code></td>"
+            "</tr>"
+        )
+    body_parts.append("</tbody></table></div></div>")
+
+    body_parts.append(f'<div class="card" id="recent-details"><h2>最近运行明细（最近 200 条）</h2><p class="muted">这是按时间倒序的轻量视图，适合快速回看最近几次跑测。</p>')
+    body_parts.append('<div class="table-wrap"><table><thead><tr><th>运行时间</th><th>运行 ID</th><th>App</th><th>Case ID</th><th>预期</th><th>实际</th><th>状态</th></tr></thead><tbody>')
+    for row in sorted(rows, key=lambda item: (str(item.get("run_at", "")), str(item.get("run_id", ""))), reverse=True)[:200]:
+        cls = status_class(str(row.get("status", "")))
+        body_parts.append(
+            "<tr>"
+            f"<td>{escape(readable_timestamp(str(row.get('run_at', ''))))}</td>"
+            f"<td><code>{escape(str(row.get('run_id', '')))}</code></td>"
+            f"<td>{escape(str(row.get('app', '')))}</td>"
+            f"<td><code>{escape(str(row.get('case_id', '')))}</code></td>"
+            f"<td>{escape(str(row.get('expected_passed', '')))}</td>"
+            f"<td>{escape(str(row.get('actual_passed', '')))}</td>"
+            f'<td><span class="tag {cls}">{escape(str(row.get("status", "")))}</span></td>'
+            "</tr>"
+        )
+    body_parts.append("</tbody></table></div></div>")
+    timeline_html.write_text(html_page(f"测试历史时间线({checker})", "".join(body_parts)), encoding="utf-8")
 
 
 def write_failure_view(rows: List[Dict[str, Any]], run_meta: Dict[str, str], failure_html: Path, checker: str) -> None:
-    bad_rows = sorted([r for r in rows if r.get("status") in ("不一致(MISMATCH)", "异常(ERROR)")], key=lambda x: (x["app"], x["case_id"]))
-    html_parts: List[str] = []
-    failure_html.parent.mkdir(parents=True, exist_ok=True)
-    html_parts.append(f'<div class="card"><h1>不一致与异常视图 ({escape(checker)})</h1><ul>')
-    html_parts.append(f"<li><strong>运行ID (Run ID)</strong>: <code>{escape(run_meta['run_id'])}</code></li>")
-    html_parts.append(f"<li><strong>运行时间 (UTC)</strong>: <code>{escape(run_meta['run_at'])}</code></li>")
-    html_parts.append(f"<li><strong>总问题数</strong>: {len(bad_rows)}</li></ul></div>")
+    scope = "failures"
+    bad_rows = [row for row in sort_rows_for_display(rows) if is_issue_status(str(row.get("status", "")))]
+    counts = count_rows(rows)
+    new_regressions = sum(1 for row in bad_rows if str(row.get("history_label", "")) == "新回归")
+    persistent = sum(1 for row in bad_rows if str(row.get("history_label", "")) == "持续失败")
+
     image_headers = "<th>Template</th><th>Target</th><th>Match Result</th>"
     if checker == "button_color":
         image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
     elif checker in {"count_change", "progress_change"}:
         image_headers = "<th>原图 Before</th><th>原图 After</th>"
-    no_data_colspan = 13 if checker == "button_color" else 11 if checker in {"count_change", "progress_change"} else 12
-    html_parts.append('<div class="card"><div class="table-wrap"><table><thead><tr>'
-                      f"<th>App</th><th>Case ID</th><th>预期</th><th>实际</th><th>状态</th><th>相似度</th><th>预期框</th><th>实际框</th><th>错误信息</th>{image_headers}"
-                      "</tr></thead><tbody>")
+
+    body_parts = [
+        '<div class="card hero"><div class="section-head">'
+        f'<div><h1>不一致与异常视图 ({escape(checker)})</h1><p class="muted">只保留需要处理的问题项，适合回归后第一时间排障。</p></div>'
+        '<div class="anchor-links"><a href="LATEST_SNAPSHOT.html">返回快照</a><a href="HISTORY_TIMELINE.html">查看历史</a></div>'
+        "</div>"
+        '<ul class="meta-list">'
+        f"<li><strong>运行 ID</strong><br /><code>{escape(run_meta['run_id'])}</code></li>"
+        f"<li><strong>运行时间</strong><br />{escape(readable_timestamp(run_meta['run_at']))}</li>"
+        f"<li><strong>问题数</strong><br />{len(bad_rows)} / {counts['total']}</li>"
+        f"<li><strong>新回归</strong><br />{new_regressions}</li>"
+        f"<li><strong>持续失败</strong><br />{persistent}</li>"
+        "</ul></div>"
+    ]
+    body_parts.append(render_filter_controls(scope, bad_rows, "搜索 app / case / 历史标签 / 错误摘要"))
+
+    no_data_colspan = 15
+    if checker == "button_color":
+        no_data_colspan = 16
+    elif checker in {"count_change", "progress_change"}:
+        no_data_colspan = 14
+
+    body_parts.append('<div class="card"><div class="section-head"><div><h2>问题明细</h2><p class="muted">默认已按新回归、持续失败、应用名称排序。</p></div></div>')
+    body_parts.append('<div class="table-wrap"><table><thead><tr>'
+                      "<th>App</th><th>Case ID</th><th>历史标签</th><th>预期</th><th>实际</th><th>状态</th><th>相似度</th><th>阈值</th><th>最近通过</th><th>错误摘要</th>"
+                      f"{image_headers}</tr></thead><tbody>")
     if not bad_rows:
-        html_parts.append(f'<tr><td colspan="{no_data_colspan}">当前运行无不一致/异常</td></tr>')
+        body_parts.append(f'<tr><td colspan="{no_data_colspan}">当前运行无不一致/异常</td></tr>')
     else:
         for row in bad_rows:
-            cls = status_class(row["status"])
-
-            def render_image_cell(abs_path: str, alt_text: str, *, is_template: bool = False) -> str:
-                if not abs_path:
-                    return "<td>-</td>"
-                rel = os.path.relpath(abs_path, failure_html.parent)
-                href = escape(rel)
-                alt = escape(alt_text)
-                image_style = "width:72px; height:72px; object-fit:contain; background:#fff;" if is_template else "height:72px; max-width:180px; object-fit:contain; background:#fff;"
-                return f'<td><a href="{href}" target="_blank" rel="noopener noreferrer"><img src="{href}" alt="{alt}" style="{image_style} border:1px solid #e5e7eb; border-radius:6px;" /></a></td>'
-
-            full_error = escape((row["error"] or "-").replace(chr(10), " "))
-            html_parts.append("<tr>")
-            html_parts.append(f"<td>{escape(row['app'])}</td><td><code>{escape(row['case_id'])}</code></td><td>{escape(row['expected_passed'])}</td><td>{escape(row['actual_passed'])}</td>")
-            html_parts.append(f'<td><span class="{cls}">{escape(row["status"])}</span></td><td>{escape(row["similarity"] or "-")}</td>')
-            html_parts.append(f"<td><code>{escape(row['expected_bounds'])}</code></td><td><code>{escape(row['actual_bounds'] or '-')}</code></td>")
-            html_parts.append(f'<td class="error-cell" title="{full_error}">{full_error}</td>')
+            cls = status_class(str(row.get("status", "")))
+            attrs = row_data_attrs(row, scope)
+            tr_class = row_css_class(row)
+            body_parts.append(f'<tr class="{escape(tr_class)}" {attrs}>')
+            body_parts.append(f"<td>{escape(str(row.get('app', '')))}</td>")
+            body_parts.append(f"<td><code>{escape(str(row.get('case_id', '')))}</code></td>")
+            body_parts.append(f'<td><span class="tag tag-info">{escape(str(row.get("history_label", "N/A")))}</span></td>')
+            body_parts.append(f"<td>{escape(str(row.get('expected_passed', '')))}</td>")
+            body_parts.append(f"<td>{escape(str(row.get('actual_passed', '')))}</td>")
+            body_parts.append(f'<td><span class="tag {cls}">{escape(str(row.get("status", "")))}</span></td>')
+            body_parts.append(f"<td>{escape(str(row.get('similarity', '') or '-'))}</td>")
+            body_parts.append(f"<td>{escape(str(row.get('threshold', '') or '-'))}</td>")
+            body_parts.append(f"<td>{escape(readable_timestamp(str(row.get('last_good_at', '-'))))}</td>")
+            body_parts.append(render_error_summary_cell(row))
             if checker == "button_color":
-                html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} before"))
-                html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
-                html_parts.append(render_image_cell(row.get("preview_button_before_image", ""), f"{row['case_id']} button before", is_template=True))
-                html_parts.append(render_image_cell(row.get("preview_button_after_image", ""), f"{row['case_id']} button after", is_template=True))
+                body_parts.append(render_image_cell(failure_html.parent, row.get("preview_template_image", ""), f"{row.get('case_id', '')} before"))
+                body_parts.append(render_image_cell(failure_html.parent, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
+                body_parts.append(render_image_cell(failure_html.parent, row.get("preview_button_before_image", ""), f"{row.get('case_id', '')} button before", is_template=True))
+                body_parts.append(render_image_cell(failure_html.parent, row.get("preview_button_after_image", ""), f"{row.get('case_id', '')} button after", is_template=True))
             elif checker in {"count_change", "progress_change"}:
-                html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} before"))
-                html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} after"))
+                body_parts.append(render_image_cell(failure_html.parent, row.get("preview_template_image", ""), f"{row.get('case_id', '')} before"))
+                body_parts.append(render_image_cell(failure_html.parent, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
             else:
-                html_parts.append(render_image_cell(row.get("preview_template_image", ""), f"{row['case_id']} template", is_template=True))
-                html_parts.append(render_image_cell(row.get("preview_target_image", ""), f"{row['case_id']} target"))
-                html_parts.append(render_image_cell(row.get("preview_match_result_image", ""), f"{row['case_id']} match result"))
-            html_parts.append("</tr>")
-    html_parts.append("</tbody></table></div></div>")
-    failure_html.write_text(html_page(f"不一致与异常视图({checker})", "".join(html_parts)), encoding="utf-8")
+                body_parts.append(render_image_cell(failure_html.parent, row.get("preview_template_image", ""), f"{row.get('case_id', '')} template", is_template=True))
+                body_parts.append(render_image_cell(failure_html.parent, row.get("preview_target_image", ""), f"{row.get('case_id', '')} target"))
+                body_parts.append(render_image_cell(failure_html.parent, row.get("preview_match_result_image", ""), f"{row.get('case_id', '')} match result"))
+            body_parts.append("</tr>")
+    body_parts.append("</tbody></table></div></div>")
+    failure_html.write_text(html_page(f"不一致与异常视图({checker})", "".join(body_parts), build_filter_script()), encoding="utf-8")
 
 
 def run(note: str, image_output_root: Path, source: str, checker_name: str) -> None:
     paths = report_paths_for_checker(checker_name)
     history_paths = history_paths_for_checker(checker_name)
+    history_rows = read_history_rows(checker_name)
+
     if source == "pytest":
         run_rows, run_meta = load_latest_run_rows_from_history(checker_name)
         if not run_rows:
             raise RuntimeError(f"未找到 {checker_name} 的 pytest 结果。请先执行 pytest，再运行 --source pytest")
-        if checker_name == "count_change":
-            enrich_count_change_preview_images(run_rows)
         if note:
             run_meta["note"] = note
+        repair_preview_images(run_rows, image_output_root)
+        enrich_rows_with_history(run_rows, history_rows, run_meta["run_id"])
         write_latest_snapshot(run_rows, run_meta, paths["latest"], checker_name)
         write_history_timeline(checker_name, paths["timeline"])
         write_failure_view(run_rows, run_meta, paths["failure"], checker_name)
@@ -533,7 +1302,13 @@ def run(note: str, image_output_root: Path, source: str, checker_name: str) -> N
     git_info = get_git_info()
     run_at = now_iso()
     run_id = run_at.replace("-", "").replace(":", "").replace("+00:00", "Z")
-    run_meta = {"run_id": run_id, "run_at": run_at, "commit": git_info["commit"], "branch": git_info["branch"], "note": note}
+    run_meta = {
+        "run_id": run_id,
+        "run_at": run_at,
+        "commit": git_info["commit"],
+        "branch": git_info["branch"],
+        "note": note,
+    }
     run_rows: List[Dict[str, Any]] = []
     for case_file in cases:
         payload = load_case(case_file)
@@ -550,6 +1325,9 @@ def run(note: str, image_output_root: Path, source: str, checker_name: str) -> N
         case_row["checker"] = checker_name
         run_rows.append(case_row)
 
+    repair_preview_images(run_rows, image_output_root)
+    enrich_rows_with_history(run_rows, history_rows, run_id)
+
     append_csv_rows(
         history_paths["runs_csv"],
         ["run_id", "run_at", "branch", "commit", "note", "checker", "case_count"],
@@ -557,7 +1335,30 @@ def run(note: str, image_output_root: Path, source: str, checker_name: str) -> N
     )
     append_csv_rows(
         history_paths["results_csv"],
-        ["run_id", "run_at", "git_commit", "checker", "app", "case_id", "case_file", "template_image", "target_image", "threshold", "expected_passed", "expected_bounds", "actual_passed", "status", "similarity", "actual_bounds", "error", "preview_template_image", "preview_target_image", "preview_match_result_image", "preview_button_before_image", "preview_button_after_image"],
+        [
+            "run_id",
+            "run_at",
+            "git_commit",
+            "checker",
+            "app",
+            "case_id",
+            "case_file",
+            "template_image",
+            "target_image",
+            "threshold",
+            "expected_passed",
+            "expected_bounds",
+            "actual_passed",
+            "status",
+            "similarity",
+            "actual_bounds",
+            "error",
+            "preview_template_image",
+            "preview_target_image",
+            "preview_match_result_image",
+            "preview_button_before_image",
+            "preview_button_after_image",
+        ],
         run_rows,
     )
     write_latest_snapshot(run_rows, run_meta, paths["latest"], checker_name)

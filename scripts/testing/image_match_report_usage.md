@@ -1,5 +1,9 @@
 # Image Match 使用说明（简版）
 
+更完整的测试报告文档见：
+
+- [test_report_guide.md](/Users/drifter327/Code/AIChecker-Dataset/scripts/testing/test_report_guide.md)
+
 这套流程做三件事：
 
 1. 跑 `pytest`
@@ -57,6 +61,13 @@ python3 scripts/testing/run_image_match_pipeline.py --venv-path AIChecker/.venv
 - `LATEST_SNAPSHOT.html`：看本次整体结果和每个 case 详情（含图片）
 - `HISTORY_TIMELINE.html`：看每个 case 从失败到修复的时间线
 - `FAILURE_VIEW.html`：只看 `不一致(MISMATCH)` 和 `异常(ERROR)`，排查最快
+
+新版报告补了几类更适合排查的信息：
+
+- 快照页会优先展示 `新回归`、`持续失败`、`已修复`，不用先通读整张大表
+- 快照页和失败页都支持按 `App / 状态 / 历史标签 / 关键字` 过滤
+- 时间线页会额外标出 `持续失败用例` 和 `最近波动用例`
+- 历史 CSV 里如果残留旧机器上的绝对路径，报告会尽量自动回填当前仓库里的本地截图
 
 ## 状态含义
 

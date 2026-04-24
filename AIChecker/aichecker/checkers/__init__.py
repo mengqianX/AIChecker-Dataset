@@ -14,6 +14,7 @@ from .image_match_checker import (
     DEFAULT_SCALE_MAX,
     DEFAULT_SCALE_STEP,
 )
+from .image_match_checker_feature import check_image_match_feature
 from .progress_change_checker import check_progress_change
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "check_toggle",
     "check_count_change",
     "check_image_match",
+    "check_image_match_feature",
     "check_progress_change",
     "DEFAULT_SIMILARITY_THRESHOLD",
     "DEFAULT_SCALE_MIN",
