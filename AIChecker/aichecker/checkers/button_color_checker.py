@@ -1,18 +1,21 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
 from ..models import Bounds, CheckResult, ControlInfo
-from ..utils import button_base_color, dominant_button_color, dominant_color, load_image, mean_color, parse_color
+from ..utils import (
+    button_base_color,
+    diff_structure_score,
+    load_image,
+    parse_color,
+)
 from PIL import Image
 
 
 DEFAULT_TOLERANCE = 20  # max per-channel delta allowed
-DEFAULT_PIXEL_THRESHOLD = 5
-DEFAULT_RATIO_THRESHOLD = 0.08
+DEFAULT_STRUCTURE_THRESHOLD = 0.25  # composite score threshold for auto_color_change
+DEFAULT_PIXEL_DIFF_THRESHOLD = 20   # τ for binary diff mask in diff_structure_score
 AUTO_COLOR_CHANGE_KEYWORDS = ("auto_color_change", "auto_color_diff", "auto_color")
 
 
@@ -83,55 +86,54 @@ def check_button_color(
     dom_color = button_base_color(crop_after)
 
     # =======================================================
-    # MODE 2: Auto "color change" detection
-    # expected_color is None → user wants to check if color changed
+    # MODE 2: Auto "color change" detection (single principle)
     # =======================================================
+    # The classical multi-signal approach (mean/dominant/coverage) cannot
+    # distinguish "button responded to click" from "background frame drifted
+    # under a transparent overlay button" — both produce large pixel-level
+    # changes.  Instead we compute a single structural descriptor of the
+    # diff `b - a` and threshold it.  See utils.diff_structure_score for the
+    # full rationale; the three sub-metrics are:
+    #   concentration : largest connected change blob / total changed pixels
+    #   coherence     : how aligned the per-pixel RGB deltas are
+    #   centrality    : whether the change concentrates at the centre or rings
+    # All three are simultaneously high only when a real, localised, coherent
+    # state transition happens (independent of which colour it transitions to).
     if expected_color is None:
         if before_color is None:
             raise ValueError("expected_color=None but no screenshot_a provided for comparison.")
-        
-        # Compare before vs after (multi-signal)
-        dom_before = dominant_button_color(crop_before)
-        dom_after = dominant_button_color(crop_after)
-        mean_before = mean_color(crop_before)
-        mean_after = mean_color(crop_after)
 
-        base_diff = tuple(abs(dom_color[i] - before_color[i]) for i in range(3))
-        dom_diff = tuple(abs(dom_after[i] - dom_before[i]) for i in range(3))
-        mean_diff = tuple(abs(mean_after[i] - mean_before[i]) for i in range(3))
-
-        base_max_diff = max(base_diff)
-        dom_max_diff = max(dom_diff)
-        mean_max_diff = max(mean_diff)
-
-        pixel_threshold = int(payload.get("pixel_threshold") or DEFAULT_PIXEL_THRESHOLD)
-        ratio_threshold = float(payload.get("ratio_threshold") or DEFAULT_RATIO_THRESHOLD)
-
-        before_arr = np.array(crop_before, dtype=np.int16)
-        after_arr = np.array(crop_after, dtype=np.int16)
-        max_per_pixel = np.abs(after_arr - before_arr).max(axis=2)
-        change_ratio = float((max_per_pixel >= pixel_threshold).mean())
-
-        passed = (
-            base_max_diff > tolerance
-            or dom_max_diff > tolerance
-            or mean_max_diff > tolerance
-            or change_ratio >= ratio_threshold
+        pixel_diff_threshold = int(
+            payload.get("pixel_diff_threshold")
+            or payload.get("pixel_threshold")
+            or DEFAULT_PIXEL_DIFF_THRESHOLD
         )
+        score_threshold = float(
+            payload.get("structure_threshold")
+            or payload.get("score_threshold")
+            or DEFAULT_STRUCTURE_THRESHOLD
+        )
+
+        metrics = diff_structure_score(
+            crop_before,
+            crop_after,
+            pixel_diff_threshold=pixel_diff_threshold,
+        )
+        score = metrics["score"]
+        passed = score > score_threshold
 
         basis = (
-            f"auto_color_change: "
-            f"base_max_diff={base_max_diff} "
-            f"dom_max_diff={dom_max_diff} "
-            f"mean_max_diff={mean_max_diff} "
-            f"change_ratio={change_ratio:.3f} "
-            f"tolerance={tolerance} "
-            f"pixel_threshold={pixel_threshold} "
-            f"ratio_threshold={ratio_threshold}"
+            f"auto_color_change(structure): "
+            f"score={score:.3f} threshold={score_threshold:.2f} "
+            f"concentration={metrics['concentration']:.3f} "
+            f"coherence={metrics['coherence']:.3f} "
+            f"centrality={metrics['centrality']:.3f} "
+            f"coverage={metrics['coverage']:.3f}"
         )
-        channel_diff = base_diff
-        max_diff = base_max_diff
-        distance = sum(d * d for d in base_diff) ** 0.5
+        # Keep these for backward-compatible report fields.
+        channel_diff = tuple(abs(dom_color[i] - before_color[i]) for i in range(3))
+        max_diff = max(channel_diff)
+        distance = sum(d * d for d in channel_diff) ** 0.5
 
     else:
         channel_diff = tuple(abs(dom_color[i] - expected_color[i]) for i in range(3))
@@ -166,19 +168,14 @@ def check_button_color(
     if expected_color is None:
         details.update(
             {
-                "base_diff": base_diff,
-                "dom_before": dom_before,
-                "dom_after": dom_after,
-                "dom_diff": dom_diff,
-                "mean_before": mean_before,
-                "mean_after": mean_after,
-                "mean_diff": mean_diff,
-                "base_max_diff": base_max_diff,
-                "dom_max_diff": dom_max_diff,
-                "mean_max_diff": mean_max_diff,
-                "pixel_threshold": pixel_threshold,
-                "ratio_threshold": ratio_threshold,
-                "change_ratio": change_ratio,
+                "structure_score": metrics["score"],
+                "concentration": metrics["concentration"],
+                "coherence": metrics["coherence"],
+                "centrality": metrics["centrality"],
+                "coverage": metrics["coverage"],
+                "n_changed": metrics["n_changed"],
+                "pixel_diff_threshold": pixel_diff_threshold,
+                "score_threshold": score_threshold,
             }
         )
 

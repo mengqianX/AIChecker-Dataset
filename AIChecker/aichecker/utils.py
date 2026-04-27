@@ -146,6 +146,117 @@ def mean_color(img: Image.Image) -> Tuple[int, int, int]:
     stat = ImageStat.Stat(img.convert("RGB"))
     return tuple(int(round(c)) for c in stat.mean[:3])  # type: ignore[return-value]
 
+
+def _largest_connected_component_area(mask: np.ndarray) -> int:
+    """4-connectivity flood-fill, returns size of largest True component."""
+    h, w = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    best = 0
+    for i in range(h):
+        for j in range(w):
+            if not mask[i, j] or visited[i, j]:
+                continue
+            stack: list[tuple[int, int]] = [(i, j)]
+            size = 0
+            while stack:
+                y, x = stack.pop()
+                if y < 0 or y >= h or x < 0 or x >= w:
+                    continue
+                if visited[y, x] or not mask[y, x]:
+                    continue
+                visited[y, x] = True
+                size += 1
+                stack.append((y + 1, x))
+                stack.append((y - 1, x))
+                stack.append((y, x + 1))
+                stack.append((y, x - 1))
+            if size > best:
+                best = size
+    return best
+
+
+def diff_structure_score(
+    crop_a: Image.Image,
+    crop_b: Image.Image,
+    *,
+    pixel_diff_threshold: int = 20,
+    min_change_pixels: int = 8,
+) -> dict:
+    """
+    Decide whether the change between (crop_a, crop_b) looks like a real
+    button state transition, as opposed to background drift on a transparent
+    overlay (e.g. like-button on top of playing video).
+
+    Returns a dict with three normalised metrics (each in [0, 1]) and a
+    composite ``score``:
+
+    - ``concentration`` = largest_connected_component / n_changed_pixels
+      Real activations form a single compact blob; background noise scatters.
+
+    - ``coherence`` = |mean(d_i)| / mean(|d_i|), where d_i is the signed RGB
+      delta of the i-th changed pixel. Real activations push pixels in one
+      consistent direction; background drift cancels out.
+
+    - ``centrality`` = inner_density / (inner_density + outer_density), where
+      inner is the central 50%x50% region. Real activations concentrate at
+      the centre; background frames around an unchanged button form a "donut"
+      pattern with low centrality.
+
+    The composite score scales the product so that a balanced case (where all
+    three signals are roughly equal) lands near the geometric mean. Threshold
+    around 0.20-0.30 in practice (see probe_diff_structure.py).
+    """
+    a = np.array(crop_a.convert("RGB"), dtype=np.int16)
+    b_img = crop_b
+    if crop_b.size != crop_a.size:
+        b_img = crop_b.resize(crop_a.size)
+    b = np.array(b_img.convert("RGB"), dtype=np.int16)
+
+    d = b - a
+    abs_max = np.abs(d).max(axis=2)
+    mask = abs_max > pixel_diff_threshold
+    n_changed = int(mask.sum())
+    coverage = n_changed / max(1, mask.size)
+
+    if n_changed < min_change_pixels:
+        return {
+            "coverage": coverage,
+            "concentration": 0.0,
+            "coherence": 0.0,
+            "centrality": 0.0,
+            "score": 0.0,
+            "n_changed": n_changed,
+        }
+
+    cmax = _largest_connected_component_area(mask)
+    concentration = cmax / max(1, n_changed)
+
+    sel = d[mask]
+    mean_dir = sel.mean(axis=0)
+    mean_dir_norm = float(np.linalg.norm(mean_dir))
+    per_pixel_norm = float(np.linalg.norm(sel, axis=1).mean())
+    coherence = mean_dir_norm / max(1e-6, per_pixel_norm)
+
+    h, w = mask.shape
+    cy0, cy1 = h // 4, h - h // 4
+    cx0, cx1 = w // 4, w - w // 4
+    inner = mask[cy0:cy1, cx0:cx1]
+    inner_area = max(1, inner.size)
+    outer_area = max(1, mask.size - inner_area)
+    inner_density = float(inner.sum()) / inner_area
+    outer_density = float(int(mask.sum()) - int(inner.sum())) / outer_area
+    centrality = inner_density / max(1e-6, inner_density + outer_density)
+
+    score = float(concentration * coherence * centrality * 2.0)
+    return {
+        "coverage": float(coverage),
+        "concentration": float(concentration),
+        "coherence": float(coherence),
+        "centrality": float(centrality),
+        "score": score,
+        "n_changed": n_changed,
+    }
+
 def _encode(obj: Any):
     if isinstance(obj, CheckResult):
         return {
