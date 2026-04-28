@@ -147,6 +147,32 @@ def mean_color(img: Image.Image) -> Tuple[int, int, int]:
     return tuple(int(round(c)) for c in stat.mean[:3])  # type: ignore[return-value]
 
 
+def _binary_dilate_square(mask: np.ndarray, radius: int) -> np.ndarray:
+    """Binary dilation with a (2r+1)x(2r+1) square structuring element.
+
+    Implemented as two separable passes (horizontal then vertical) of slice
+    OR-shifts, so the cost is O(r) instead of O(r^2) per pass.
+
+    The purpose in our pipeline is to bridge nearby disconnected components
+    of the diff mask (e.g. individual characters of a text button "Qwen3 - Max"
+    sitting a few pixels apart) so that the largest-connected-component
+    statistic recognises the text *line* as one structure rather than dozens
+    of unrelated specks.
+    """
+    if radius <= 0:
+        return mask
+    h, w = mask.shape
+    horizontal = mask.copy()
+    for r in range(1, radius + 1):
+        horizontal[:, r:] |= mask[:, : w - r]
+        horizontal[:, : w - r] |= mask[:, r:]
+    out = horizontal.copy()
+    for r in range(1, radius + 1):
+        out[r:, :] |= horizontal[: h - r, :]
+        out[: h - r, :] |= horizontal[r:, :]
+    return out
+
+
 def _largest_connected_component_area(mask: np.ndarray) -> int:
     """4-connectivity flood-fill, returns size of largest True component."""
     h, w = mask.shape
@@ -175,12 +201,156 @@ def _largest_connected_component_area(mask: np.ndarray) -> int:
     return best
 
 
+def _rgb_to_value_saturation(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return HSV V and S channels as float arrays in [0, 1]."""
+    rgb_f = rgb.astype(np.float32) / 255.0
+    cmax = rgb_f.max(axis=-1)
+    cmin = rgb_f.min(axis=-1)
+    delta = cmax - cmin
+    s = np.where(cmax == 0, 0, delta / np.where(cmax == 0, 1, cmax))
+    return cmax, s
+
+
+def _best_iou_over_shifts(
+    ma: np.ndarray, mb: np.ndarray, max_shift: int
+) -> tuple[float, int, int]:
+    """Brute-force the (dx, dy) translation in [-R, R]^2 that maximises
+    IoU(ma, shift(mb, dx, dy)).
+
+    Cost: O((2R+1)^2 * pixels).  For R=4 on a 100x100 mask that's ~80 numpy
+    bitops, well under a millisecond.
+
+    Why this matters: the outline IoU veto fails as soon as the two ink
+    masks are off by even 1-2 pixels (typical for screenshots taken across
+    a layout reflow, scrolling video overlays, or device-level animation
+    in flight).  Searching a small translation window restores the veto's
+    core invariant ("did the icon's geometry actually change?") without
+    being fooled into matching truly-different shapes — a real activation
+    that reshapes the ink (outline -> filled, etc.) will still produce
+    low IoU at every offset.
+    """
+    h, w = ma.shape
+    a_sum = int(ma.sum())
+    best_iou = -1.0
+    best_dx = best_dy = 0
+    for dy in range(-max_shift, max_shift + 1):
+        y0_src = max(0, -dy); y1_src = min(h, h - dy)
+        y0_dst = max(0, dy);  y1_dst = min(h, h + dy)
+        for dx in range(-max_shift, max_shift + 1):
+            x0_src = max(0, -dx); x1_src = min(w, w - dx)
+            x0_dst = max(0, dx);  x1_dst = min(w, w + dx)
+            shifted = np.zeros_like(mb)
+            shifted[y0_dst:y1_dst, x0_dst:x1_dst] = mb[y0_src:y1_src, x0_src:x1_src]
+            inter = int((ma & shifted).sum())
+            b_sum = int(shifted.sum())
+            union = a_sum + b_sum - inter
+            iou = inter / max(1, union)
+            if iou > best_iou:
+                best_iou = iou
+                best_dx, best_dy = dx, dy
+    return best_iou, best_dx, best_dy
+
+
+def outline_iou_and_coverage(
+    crop_a: Image.Image,
+    crop_b: Image.Image,
+    *,
+    white_v_min: float = 0.90,
+    white_s_max: float = 0.18,
+    black_v_max: float = 0.10,
+    max_shift: int = 4,
+    min_align_count: int = 8,
+) -> dict:
+    """
+    Detect "outline ink" pixels (deliberately-rendered near-white or near-black
+    pixels — e.g. the white outline of an overlay like-button) in both frames
+    and compare their geometry.
+
+    Pure-white and pure-black pixels almost never occur in natural photo /
+    video content (which always picks up a colour cast and never reaches
+    the channel extremes due to dynamic-range compression).  Buttons rendered
+    for high-contrast overlay use, on the other hand, routinely use these
+    extremes.
+
+    The function picks whichever of {near-white, near-black} is most stably
+    present *in both frames* — i.e. the ink colour with the largest
+    ``min(count_a, count_b)`` — then computes:
+
+    - ``coverage``  : max(count_a, count_b) / pixel_count
+                      How much of the bbox is covered by ink in either frame.
+    - ``iou``       : intersection-over-union of the two ink masks.
+                      Tells us whether the outline shape stayed in the same
+                      pixel positions.  ``iou ≈ 1`` means the icon is
+                      geometrically identical between the two frames.
+
+    A real button activation that turns an outline icon into a filled icon
+    drastically reshapes the ink mask (low IoU); a static outline icon over
+    a drifting video background leaves the mask nearly identical (IoU near
+    1) regardless of how chaotic the surrounding pixels are.
+
+    Why ``min(count_a, count_b)`` and not ``count_a + count_b``:  video
+    backgrounds frequently contribute large amounts of *one-sided* ink
+    (e.g. one frame is a near-black night shot, the next frame is bright
+    daylight) — these pixels are not real UI ink, just background bleed,
+    and they would dominate any sum-based selector.  Taking the per-frame
+    minimum filters them out: only ink that survives in *both* frames is
+    considered, which is exactly the geometric signature of a static UI
+    overlay.  Real button outlines are rendered identically on each frame
+    so their per-frame counts are nearly equal; transient video-content
+    pixels collapse to ``min ≈ 0``.
+    """
+    a = np.array(crop_a.convert("RGB"))
+    b_img = crop_b if crop_b.size == crop_a.size else crop_b.resize(crop_a.size)
+    b = np.array(b_img.convert("RGB"))
+
+    va, sa = _rgb_to_value_saturation(a)
+    vb, sb = _rgb_to_value_saturation(b)
+    near_white_a = (va >= white_v_min) & (sa <= white_s_max)
+    near_white_b = (vb >= white_v_min) & (sb <= white_s_max)
+    near_black_a = va <= black_v_max
+    near_black_b = vb <= black_v_max
+
+    white_stable = min(int(near_white_a.sum()), int(near_white_b.sum()))
+    black_stable = min(int(near_black_a.sum()), int(near_black_b.sum()))
+    if white_stable >= black_stable:
+        ma, mb = near_white_a, near_white_b
+        ink = "white"
+    else:
+        ma, mb = near_black_a, near_black_b
+        ink = "black"
+
+    count_a = int(ma.sum())
+    count_b = int(mb.sum())
+    total = max(1, ma.size)
+
+    # Search a small translation window for the alignment that maximises IoU.
+    # When both masks are too sparse to align reliably, fall back to a direct
+    # IoU at zero shift — searching there only adds noise.
+    if max_shift > 0 and count_a >= min_align_count and count_b >= min_align_count:
+        iou, dx, dy = _best_iou_over_shifts(ma, mb, max_shift)
+    else:
+        inter = int((ma & mb).sum())
+        union = int((ma | mb).sum())
+        iou = inter / max(1, union)
+        dx = dy = 0
+
+    return {
+        "ink_color": ink,
+        "count_a": count_a,
+        "count_b": count_b,
+        "coverage": max(count_a, count_b) / total,
+        "iou": iou,
+        "shift": (dx, dy),
+    }
+
+
 def diff_structure_score(
     crop_a: Image.Image,
     crop_b: Image.Image,
     *,
     pixel_diff_threshold: int = 20,
     min_change_pixels: int = 8,
+    mask_dilate_radius: int = 2,
 ) -> dict:
     """
     Decide whether the change between (crop_a, crop_b) looks like a real
@@ -190,21 +360,32 @@ def diff_structure_score(
     Returns a dict with three normalised metrics (each in [0, 1]) and a
     composite ``score``:
 
-    - ``concentration`` = largest_connected_component / n_changed_pixels
+    - ``concentration`` = largest_connected_component / n_dilated_pixels
       Real activations form a single compact blob; background noise scatters.
+
+      The mask is morphologically dilated by ``mask_dilate_radius`` pixels
+      *before* connected-component counting so that text-style activations
+      ("Qwen3 - Max" turning blue→black) — whose changed pixels are spread
+      across many separated character glyphs — are recognised as a single
+      coherent text-line structure.  Without this, concentration measures
+      "biggest single character / total characters" and saturates near 1/N.
+      A radius of 2 (i.e. a 5x5 SE) bridges typical inter-character gaps
+      without merging unrelated regions of a noisy background.
 
     - ``coherence`` = |mean(d_i)| / mean(|d_i|), where d_i is the signed RGB
       delta of the i-th changed pixel. Real activations push pixels in one
-      consistent direction; background drift cancels out.
+      consistent direction; background drift cancels out.  Computed on the
+      *original* (un-dilated) mask so dilated-in pixels don't dilute the
+      direction estimate with their unrelated colour values.
 
     - ``centrality`` = inner_density / (inner_density + outer_density), where
       inner is the central 50%x50% region. Real activations concentrate at
       the centre; background frames around an unchanged button form a "donut"
-      pattern with low centrality.
+      pattern with low centrality.  Also computed on the original mask.
 
     The composite score scales the product so that a balanced case (where all
     three signals are roughly equal) lands near the geometric mean. Threshold
-    around 0.20-0.30 in practice (see probe_diff_structure.py).
+    around 0.20-0.30 in practice.
     """
     a = np.array(crop_a.convert("RGB"), dtype=np.int16)
     b_img = crop_b
@@ -228,8 +409,10 @@ def diff_structure_score(
             "n_changed": n_changed,
         }
 
-    cmax = _largest_connected_component_area(mask)
-    concentration = cmax / max(1, n_changed)
+    mask_for_cc = _binary_dilate_square(mask, mask_dilate_radius) if mask_dilate_radius > 0 else mask
+    n_for_cc = int(mask_for_cc.sum()) if mask_dilate_radius > 0 else n_changed
+    cmax = _largest_connected_component_area(mask_for_cc)
+    concentration = cmax / max(1, n_for_cc)
 
     sel = d[mask]
     mean_dir = sel.mean(axis=0)

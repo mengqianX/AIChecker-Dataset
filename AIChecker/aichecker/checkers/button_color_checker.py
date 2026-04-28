@@ -8,6 +8,7 @@ from ..utils import (
     button_base_color,
     diff_structure_score,
     load_image,
+    outline_iou_and_coverage,
     parse_color,
 )
 from PIL import Image
@@ -15,7 +16,25 @@ from PIL import Image
 
 DEFAULT_TOLERANCE = 20  # max per-channel delta allowed
 DEFAULT_STRUCTURE_THRESHOLD = 0.25  # composite score threshold for auto_color_change
-DEFAULT_PIXEL_DIFF_THRESHOLD = 20   # τ for binary diff mask in diff_structure_score
+DEFAULT_PIXEL_DIFF_THRESHOLD = 10   # τ for binary diff mask; low enough to catch
+                                    # subtle but uniform "whole-button darkens" activations
+                                    # (e.g. semi-transparent button pressed state where
+                                    # every pixel shifts by ~8 RGB).
+DEFAULT_MASK_DILATE_RADIUS = 2      # bridge gaps between character glyphs before
+                                    # measuring concentration, so text-style activations
+                                    # ("Qwen3-Max" turning blue->black, made of ~30
+                                    # disconnected character blobs) register as one
+                                    # coherent text-line structure instead of dozens
+                                    # of unrelated specks.
+# Outline-IoU veto parameters: "icon whose ink outline didn't move" is conclusive
+# evidence of no real activation, regardless of any structural noise we measure.
+DEFAULT_OUTLINE_IOU_VETO = 0.80         # outline_iou >= this => veto fires
+DEFAULT_OUTLINE_VETO_MIN_COV = 0.01     # below this we don't trust outline detection
+DEFAULT_OUTLINE_VETO_MAX_COV = 0.55     # above this it's a labelled solid button, not an overlay icon
+DEFAULT_OUTLINE_MAX_SHIFT = 4           # search [-4, +4] pixel translations when computing
+                                        # outline IoU, so that small layout jitter / video
+                                        # overlay drift / capture-time animation doesn't
+                                        # destroy the static-icon detection signal.
 AUTO_COLOR_CHANGE_KEYWORDS = ("auto_color_change", "auto_color_diff", "auto_color")
 
 
@@ -86,19 +105,39 @@ def check_button_color(
     dom_color = button_base_color(crop_after)
 
     # =======================================================
-    # MODE 2: Auto "color change" detection (single principle)
+    # MODE 2: Auto "color change" detection (two complementary signals)
     # =======================================================
-    # The classical multi-signal approach (mean/dominant/coverage) cannot
-    # distinguish "button responded to click" from "background frame drifted
-    # under a transparent overlay button" — both produce large pixel-level
-    # changes.  Instead we compute a single structural descriptor of the
-    # diff `b - a` and threshold it.  See utils.diff_structure_score for the
-    # full rationale; the three sub-metrics are:
-    #   concentration : largest connected change blob / total changed pixels
-    #   coherence     : how aligned the per-pixel RGB deltas are
-    #   centrality    : whether the change concentrates at the centre or rings
-    # All three are simultaneously high only when a real, localised, coherent
-    # state transition happens (independent of which colour it transitions to).
+    # We combine two independent diagnostics, each addressing a different
+    # failure mode of the naive bbox-colour-diff approach:
+    #
+    #  (1) STRUCTURE SCORE  (utils.diff_structure_score)
+    #      Asks: is the change between a and b localised (single connected
+    #      blob), coherent (RGB deltas point in one direction), and centred
+    #      in the bbox?  Real button activations satisfy all three; video
+    #      background drift around a static button does not.
+    #
+    #  (2) OUTLINE-IoU VETO  (utils.outline_iou_and_coverage)
+    #      For overlay-style icons (white outline on dynamic background),
+    #      the structural signal can still be fooled when the surrounding
+    #      video drifts coherently.  The geometric signature of activation
+    #      is unmistakable though: a deliberate ink pattern (near-pure-white
+    #      or near-pure-black pixels) shifts position or disappears.  When
+    #      the bbox contains a small overlay icon whose ink mask is almost
+    #      similar between a and b (IoU ≥ 0.80), we know the icon's geometry
+    #      didn't change — vetoing any positive structural signal.  The 0.80
+    #      threshold (rather than 0.95) is deliberately permissive: it allows
+    #      some edge-pixel drift caused by a video background bleeding through
+    #      a semi-transparent ink layer, which would otherwise let a stable
+    #      overlay icon slip past the veto.
+    #
+    # The veto is restricted to outline_coverage ∈ [0.01, 0.55] because:
+    #   - Below 1%: outline detection unreliable, can't trust IoU.
+    #   - Above 55%: bbox is dominated by a static label/icon (solid buttons
+    #     with white text "关注" etc.); legitimate activation would shift
+    #     the button's body colour while the label persists, which would
+    #     spuriously fire the veto.  Coverage in this regime correlates with
+    #     "real activation candidates have outline_iou ≈ 0", so the iou
+    #     threshold filters them out anyway.
     if expected_color is None:
         if before_color is None:
             raise ValueError("expected_color=None but no screenshot_a provided for comparison.")
@@ -113,22 +152,41 @@ def check_button_color(
             or payload.get("score_threshold")
             or DEFAULT_STRUCTURE_THRESHOLD
         )
+        outline_iou_veto = float(
+            payload.get("outline_iou_veto") or DEFAULT_OUTLINE_IOU_VETO
+        )
+        outline_veto_min_cov = float(
+            payload.get("outline_veto_min_coverage") or DEFAULT_OUTLINE_VETO_MIN_COV
+        )
+        outline_veto_max_cov = float(
+            payload.get("outline_veto_max_coverage") or DEFAULT_OUTLINE_VETO_MAX_COV
+        )
+        _mdr = payload.get("mask_dilate_radius")
+        mask_dilate_radius = int(_mdr) if _mdr is not None else DEFAULT_MASK_DILATE_RADIUS
+        _oms = payload.get("outline_max_shift")
+        outline_max_shift = int(_oms) if _oms is not None else DEFAULT_OUTLINE_MAX_SHIFT
 
         metrics = diff_structure_score(
             crop_before,
             crop_after,
             pixel_diff_threshold=pixel_diff_threshold,
+            mask_dilate_radius=mask_dilate_radius,
         )
+        outline = outline_iou_and_coverage(crop_before, crop_after, max_shift=outline_max_shift)
+
         score = metrics["score"]
-        passed = score > score_threshold
+        is_overlay_icon = outline_veto_min_cov <= outline["coverage"] <= outline_veto_max_cov
+        outline_veto_active = is_overlay_icon and outline["iou"] >= outline_iou_veto
+        passed = (score > score_threshold) and not outline_veto_active
 
         basis = (
-            f"auto_color_change(structure): "
-            f"score={score:.3f} threshold={score_threshold:.2f} "
-            f"concentration={metrics['concentration']:.3f} "
+            f"auto_color_change(structure+outline): "
+            f"score={score:.3f}>{score_threshold:.2f}={'Y' if score > score_threshold else 'N'} "
+            f"outline_iou={outline['iou']:.3f} coverage={outline['coverage']:.3f} "
+            f"veto={'fired' if outline_veto_active else 'idle'} "
+            f"[concentration={metrics['concentration']:.3f} "
             f"coherence={metrics['coherence']:.3f} "
-            f"centrality={metrics['centrality']:.3f} "
-            f"coverage={metrics['coverage']:.3f}"
+            f"centrality={metrics['centrality']:.3f}]"
         )
         # Keep these for backward-compatible report fields.
         channel_diff = tuple(abs(dom_color[i] - before_color[i]) for i in range(3))
@@ -175,7 +233,19 @@ def check_button_color(
                 "coverage": metrics["coverage"],
                 "n_changed": metrics["n_changed"],
                 "pixel_diff_threshold": pixel_diff_threshold,
+                "mask_dilate_radius": mask_dilate_radius,
                 "score_threshold": score_threshold,
+                "outline_ink_color": outline["ink_color"],
+                "outline_count_a": outline["count_a"],
+                "outline_count_b": outline["count_b"],
+                "outline_coverage": outline["coverage"],
+                "outline_iou": outline["iou"],
+                "outline_shift": outline.get("shift", (0, 0)),
+                "outline_max_shift": outline_max_shift,
+                "outline_veto_active": outline_veto_active,
+                "outline_iou_veto": outline_iou_veto,
+                "outline_veto_min_coverage": outline_veto_min_cov,
+                "outline_veto_max_coverage": outline_veto_max_cov,
             }
         )
 
