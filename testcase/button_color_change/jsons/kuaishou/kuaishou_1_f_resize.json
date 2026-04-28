@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/kuaishou/kuaishou_1_before.png",
+  "screenshot_b": "../../screens/kuaishou/kuaishou_1_before_resize.png",
+  "bounds": [
+    884,
+    806,
+    1037,
+    899
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

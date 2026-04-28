@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/gpt/gpt_2_before_resize.png",
+  "screenshot_b": "../../screens/gpt/gpt_2_after_resize.png",
+  "bounds": [
+    72,
+    684,
+    538,
+    828
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

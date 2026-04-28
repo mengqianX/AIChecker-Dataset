@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/aiqiyi/aiqiyi_3_before_resize.png",
+  "screenshot_b": "../../screens/aiqiyi/aiqiyi_3_after_resize.png",
+  "bounds": [
+    936,
+    1155,
+    1062,
+    1281
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

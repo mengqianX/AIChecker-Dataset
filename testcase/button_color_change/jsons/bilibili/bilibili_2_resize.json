@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/bilibili/bilibili_2_before_resize.png",
+  "screenshot_b": "../../screens/bilibili/bilibili_2_after_resize.png",
+  "bounds": [
+    952,
+    489,
+    1048,
+    549
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

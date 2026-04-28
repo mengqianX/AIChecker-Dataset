@@ -1,0 +1,13 @@
+{
+  "type": "count_change",
+  "screenshot_a": "../../screens/qqmusic/qqmusic_before_3_resize.png",
+  "screenshot_b": "../../screens/qqmusic/qqmusic_after_3_resize.png",
+  "bounds": [
+    213,
+    1221,
+    257,
+    1276
+  ],
+  "expected_passed": true,
+  "label": "pass"
+}

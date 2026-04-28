@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    913,
+    571,
+    1034,
+    631
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/taobao/taobao_1_before_resize.png",
+  "screenshot_b": "../../screens/taobao/taobao_1_after_resize.png",
+  "expected_passed": true
+}

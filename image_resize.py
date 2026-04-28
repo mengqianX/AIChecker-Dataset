@@ -6,6 +6,7 @@ from PIL import Image
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+CASE_IMAGE_KEYS = ("target_image", "screenshot_a", "screenshot_b")
 
 
 def append_resize_suffix(path_str: str) -> str:
@@ -46,20 +47,25 @@ def simulate_low_res_screenshot(input_path, output_path, blur_factor=0.3):
     }
 
 
-def iter_target_images(screens_dir: Path):
+def iter_dataset_images(screens_dir: Path, stem_filters: tuple[str, ...] | None = None):
     for image_path in sorted(screens_dir.rglob("*")):
         if (
             image_path.is_file()
             and image_path.suffix.lower() in IMAGE_SUFFIXES
-            and "target" in image_path.stem
             and not image_path.stem.endswith("_resize")
+            and (
+                stem_filters is None
+                or any(stem_filter in image_path.stem for stem_filter in stem_filters)
+            )
         ):
             yield image_path
 
 
-def generate_resized_targets(screens_dir: Path, blur_factor: float):
+def generate_resized_images(
+    screens_dir: Path, blur_factor: float, stem_filters: tuple[str, ...] | None = None
+):
     generated = []
-    for image_path in iter_target_images(screens_dir):
+    for image_path in iter_dataset_images(screens_dir, stem_filters=stem_filters):
         output_path = image_path.with_name(f"{image_path.stem}_resize{image_path.suffix}")
         generated.append(
             simulate_low_res_screenshot(image_path, output_path, blur_factor=blur_factor)
@@ -69,10 +75,39 @@ def generate_resized_targets(screens_dir: Path, blur_factor: float):
 
 def build_resized_case_payload(payload: dict) -> dict:
     new_payload = json.loads(json.dumps(payload))
-    new_payload["target_image"] = append_resize_suffix(payload["target_image"])
+    for key in CASE_IMAGE_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str):
+            new_payload[key] = append_resize_suffix(value)
     if "description" in new_payload and new_payload["description"]:
         new_payload["description"] = f'{new_payload["description"]}（resize target）'
     return new_payload
+
+
+def build_mixed_resolution_case_payload(payload: dict) -> dict:
+    new_payload = json.loads(json.dumps(payload))
+    screenshot_a = payload.get("screenshot_a")
+    screenshot_b = payload.get("screenshot_b")
+    if isinstance(screenshot_a, str):
+        new_payload["screenshot_a"] = screenshot_a
+    if isinstance(screenshot_b, str):
+        new_payload["screenshot_b"] = append_resize_suffix(screenshot_b)
+    if "description" in new_payload and new_payload["description"]:
+        new_payload["description"] = f'{new_payload["description"]}（mixed resolution）'
+    return new_payload
+
+
+def has_supported_case_image(payload: dict) -> bool:
+    return any(isinstance(payload.get(key), str) for key in CASE_IMAGE_KEYS)
+
+
+def resolve_case_image_paths(json_path: Path, payload: dict) -> list[Path]:
+    resolved = []
+    for key in CASE_IMAGE_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str):
+            resolved.append((json_path.parent / value.strip()).resolve())
+    return resolved
 
 
 def generate_resized_cases(jsons_dir: Path):
@@ -84,31 +119,55 @@ def generate_resized_cases(jsons_dir: Path):
         with json_path.open("r", encoding="utf-8") as f:
             payload = json.load(f)
 
-        target_image = payload.get("target_image")
-        if not isinstance(target_image, str) or "_resize" in Path(target_image).stem:
+        if not has_supported_case_image(payload):
+            continue
+
+        image_values = [
+            payload[key]
+            for key in CASE_IMAGE_KEYS
+            if isinstance(payload.get(key), str)
+        ]
+        if any("_resize" in Path(value).stem for value in image_values):
+            continue
+        if not any("/screens/" in value or value.startswith("../screens/") for value in image_values):
+            continue
+        resolved_paths = resolve_case_image_paths(json_path, payload)
+        if not resolved_paths or not all(path.exists() for path in resolved_paths):
             continue
 
         output_path = json_path.with_name(f"{json_path.stem}_resize{json_path.suffix}")
-        new_payload = build_resized_case_payload(payload)
+        if (
+            json_path.stem.endswith("_f")
+            and isinstance(payload.get("screenshot_a"), str)
+            and isinstance(payload.get("screenshot_b"), str)
+        ):
+            new_payload = build_mixed_resolution_case_payload(payload)
+        else:
+            new_payload = build_resized_case_payload(payload)
         with output_path.open("w", encoding="utf-8") as f:
             json.dump(new_payload, f, ensure_ascii=False, indent=2)
             f.write("\n")
-        generated.append((json_path, output_path, new_payload["target_image"]))
+        generated.append((json_path, output_path))
     return generated
 
 
-def run_image_match_batch(
-    screens_dir: Path, jsons_dir: Path, blur_factor: float
+def run_dataset_batch(
+    screens_dir: Path,
+    jsons_dir: Path,
+    blur_factor: float,
+    stem_filters: tuple[str, ...] | None = None,
 ):
-    generated_images = generate_resized_targets(screens_dir, blur_factor=blur_factor)
+    generated_images = generate_resized_images(
+        screens_dir, blur_factor=blur_factor, stem_filters=stem_filters
+    )
     generated_cases = generate_resized_cases(jsons_dir)
 
-    print(f"生成低分辨率 target 图片: {len(generated_images)}")
+    print(f"生成低分辨率截图: {len(generated_images)}")
     print(f"生成 resize case: {len(generated_cases)}")
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="批量生成低分辨率截图及对应 image_match case")
+    parser = argparse.ArgumentParser(description="批量生成低分辨率截图及对应测试用例")
     parser.add_argument("--input", help="单张图片输入路径")
     parser.add_argument("--output", help="单张图片输出路径")
     parser.add_argument(
@@ -125,7 +184,13 @@ def parse_args():
     parser.add_argument(
         "--jsons-dir",
         default="testcase/image_match/jsons",
-        help="image_match jsons 目录",
+        help="测试用例 jsons 目录",
+    )
+    parser.add_argument(
+        "--dataset-type",
+        choices=("image_match", "dual_screenshot", "all"),
+        default="image_match",
+        help="数据集类型；image_match 只处理 target 图，dual_screenshot 处理 screens 下所有截图",
     )
     return parser.parse_args()
 
@@ -145,8 +210,10 @@ if __name__ == "__main__":
             f"当前尺寸: {result['generated_size'][0]}x{result['generated_size'][1]} (坐标已对齐)"
         )
     else:
-        run_image_match_batch(
+        stem_filters = ("target",) if args.dataset_type == "image_match" else None
+        run_dataset_batch(
             screens_dir=Path(args.screens_dir),
             jsons_dir=Path(args.jsons_dir),
             blur_factor=args.blur_factor,
+            stem_filters=stem_filters,
         )

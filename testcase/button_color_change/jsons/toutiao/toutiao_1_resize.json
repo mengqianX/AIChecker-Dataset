@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/toutiao/toutiao_1_before_resize.png",
+  "screenshot_b": "../../screens/toutiao/toutiao_1_after_resize.png",
+  "bounds": [
+    838,
+    1888,
+    958,
+    1960
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

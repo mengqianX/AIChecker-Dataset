@@ -1,0 +1,13 @@
+{
+  "type": "count_change",
+  "screenshot_a": "../../screens/douyin/douyin_before_2_resize.png",
+  "screenshot_b": "../../screens/douyin/douyin_after_2_resize.png",
+  "bounds": [
+    454,
+    246,
+    625,
+    337
+  ],
+  "expected_passed": true,
+  "label": "pass"
+}

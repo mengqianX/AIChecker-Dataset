@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/qqemail/qqemail_2_before_resize.png",
+  "screenshot_b": "../../screens/qqemail/qqemail_2_after_resize.png",
+  "bounds": [
+    467,
+    307,
+    515,
+    355
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/tencent/tencent_before_2_resize.png",
+  "screenshot_b": "../../screens/tencent/tencent_after_2_resize.png",
+  "bounds": [
+    48,
+    1971,
+    1032,
+    2079
+  ],
+  "expected_passed": true
+}

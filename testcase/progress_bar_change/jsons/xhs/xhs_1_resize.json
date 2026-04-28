@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/xhs/xhs_before_1_resize.png",
+  "screenshot_b": "../../screens/xhs/xhs_after_1_resize.png",
+  "bounds": [
+    33,
+    2091,
+    1047,
+    2112
+  ],
+  "expected_passed": true
+}

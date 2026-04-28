@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/amap/amap_2_before_resize.png",
+  "screenshot_b": "../../screens/amap/amap_2_after_resize.png",
+  "bounds": [
+    63,
+    2106,
+    153,
+    2196
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}
