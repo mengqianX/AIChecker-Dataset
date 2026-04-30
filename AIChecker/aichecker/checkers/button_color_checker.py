@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+import numpy as np
 from ..models import Bounds, CheckResult, ControlInfo
 from ..utils import (
     button_base_color,
@@ -11,10 +12,11 @@ from ..utils import (
     outline_iou_and_coverage,
     parse_color,
 )
-from PIL import Image
+from PIL import Image, ImageFilter
 
 
 DEFAULT_TOLERANCE = 20  # max per-channel delta allowed
+DEFAULT_AUTO_COLOR_MODE = "hybrid"
 DEFAULT_STRUCTURE_THRESHOLD = 0.25  # composite score threshold for auto_color_change
 DEFAULT_PIXEL_DIFF_THRESHOLD = 10   # τ for binary diff mask; low enough to catch
                                     # subtle but uniform "whole-button darkens" activations
@@ -31,11 +33,228 @@ DEFAULT_MASK_DILATE_RADIUS = 2      # bridge gaps between character glyphs befor
 DEFAULT_OUTLINE_IOU_VETO = 0.80         # outline_iou >= this => veto fires
 DEFAULT_OUTLINE_VETO_MIN_COV = 0.01     # below this we don't trust outline detection
 DEFAULT_OUTLINE_VETO_MAX_COV = 0.55     # above this it's a labelled solid button, not an overlay icon
+DEFAULT_OUTLINE_HIGH_COV_IOU_VETO = 0.95    # in heavy blur/compression, unchanged controls often
+                                             # keep very high outline IoU even with large coverage
+DEFAULT_OUTLINE_HIGH_COV_MIN = 0.70          # enable a conservative static-control veto in that regime
+DEFAULT_OUTLINE_HIGH_COV_MAX_COLOR_DELTA = 6  # only veto if dominant/base colour drift is tiny
+DEFAULT_OUTLINE_HIGH_COV_MAX_COHERENCE = 0.75  # avoid vetoing genuine coherent activations
 DEFAULT_OUTLINE_MAX_SHIFT = 4           # search [-4, +4] pixel translations when computing
                                         # outline IoU, so that small layout jitter / video
                                         # overlay drift / capture-time animation doesn't
                                         # destroy the static-icon detection signal.
+DEFAULT_SEGMENTATION_SEED_RATIO = 0.25
+DEFAULT_SEGMENTATION_COLOR_TOLERANCE = 32
+DEFAULT_SEGMENTATION_MIN_COVERAGE = 0.05
+DEFAULT_SEGMENTATION_MAX_COVERAGE = 1.00
+DEFAULT_SEGMENTATION_MIN_IOU = 0.20
+DEFAULT_SEGMENTATION_COLOR_DELTA_THRESHOLD = 8.0
+DEFAULT_SEGMENTATION_KERNEL = 5
 AUTO_COLOR_CHANGE_KEYWORDS = ("auto_color_change", "auto_color_diff", "auto_color")
+AUTO_COLOR_MODES = ("hybrid", "pure_segmentation")
+
+
+def _binary_mask_morphology(mask: np.ndarray, kernel_size: int) -> np.ndarray:
+    """
+    Close + open a binary mask with PIL Max/Min filters.
+    """
+    if kernel_size <= 1:
+        return mask
+    # PIL filters require odd sizes >= 3.
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    kernel_size = max(3, kernel_size)
+    img = Image.fromarray((mask.astype(np.uint8) * 255), mode="L")
+    # close: dilation -> erosion, then open: erosion -> dilation.
+    img = img.filter(ImageFilter.MaxFilter(size=kernel_size))
+    img = img.filter(ImageFilter.MinFilter(size=kernel_size))
+    img = img.filter(ImageFilter.MinFilter(size=kernel_size))
+    img = img.filter(ImageFilter.MaxFilter(size=kernel_size))
+    return np.array(img) > 0
+
+
+def _largest_connected_component(mask: np.ndarray) -> np.ndarray:
+    """
+    Return largest 8-connected component from a binary mask.
+    """
+    h, w = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    best_pixels: list[tuple[int, int]] = []
+
+    for y in range(h):
+        for x in range(w):
+            if not mask[y, x] or visited[y, x]:
+                continue
+            stack = [(y, x)]
+            visited[y, x] = True
+            pixels: list[tuple[int, int]] = []
+            while stack:
+                cy, cx = stack.pop()
+                pixels.append((cy, cx))
+                y0 = max(0, cy - 1)
+                y1 = min(h, cy + 2)
+                x0 = max(0, cx - 1)
+                x1 = min(w, cx + 2)
+                for ny in range(y0, y1):
+                    for nx in range(x0, x1):
+                        if not visited[ny, nx] and mask[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((ny, nx))
+            if len(pixels) > len(best_pixels):
+                best_pixels = pixels
+
+    out = np.zeros_like(mask, dtype=bool)
+    for py, px in best_pixels:
+        out[py, px] = True
+    return out
+
+
+def _segment_button_body(
+    crop: Image.Image,
+    *,
+    seed_ratio: float,
+    color_tolerance: int,
+    kernel_size: int,
+    anchor_colors: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    Segment central button body by color-similarity to center seed region.
+    """
+    arr = np.array(crop.convert("RGB"), dtype=np.int16)
+    h, w = arr.shape[:2]
+    cy0 = int(h * (0.5 - seed_ratio / 2))
+    cy1 = int(h * (0.5 + seed_ratio / 2))
+    cx0 = int(w * (0.5 - seed_ratio / 2))
+    cx1 = int(w * (0.5 + seed_ratio / 2))
+    cy0, cy1 = max(0, cy0), max(cy0 + 1, min(h, cy1))
+    cx0, cx1 = max(0, cx0), max(cx0 + 1, min(w, cx1))
+    center_patch = arr[cy0:cy1, cx0:cx1]
+    if anchor_colors is None:
+        anchors = np.median(center_patch.reshape(-1, 3), axis=0).reshape(1, 3)
+    else:
+        anchors = anchor_colors
+
+    max_delta = np.full((h, w), 1e9, dtype=np.float32)
+    for anchor in anchors:
+        dist = np.max(np.abs(arr - anchor[None, None, :]), axis=2).astype(np.float32)
+        max_delta = np.minimum(max_delta, dist)
+    mask = max_delta <= color_tolerance
+    mask = _binary_mask_morphology(mask, kernel_size=kernel_size)
+    if not mask.any():
+        return mask
+    mask = _largest_connected_component(mask)
+    return mask
+
+
+def _mean_color_in_mask(crop: Image.Image, mask: np.ndarray) -> Tuple[float, float, float]:
+    arr = np.array(crop.convert("RGB"), dtype=np.float32)
+    if not mask.any():
+        return (0.0, 0.0, 0.0)
+    sel = arr[mask]
+    means = sel.mean(axis=0)
+    return (float(means[0]), float(means[1]), float(means[2]))
+
+
+def _segmentation_activation_score(
+    crop_before: Image.Image,
+    crop_after: Image.Image,
+    *,
+    seed_ratio: float,
+    color_tolerance: int,
+    kernel_size: int,
+) -> Dict[str, Any]:
+    # Use both frame seeds as anchors so segmentation remains stable
+    # even when button color changes significantly between states.
+    seed_before = np.array(
+        _mean_color_in_mask(
+            crop_before,
+            _segment_button_body(
+                crop_before,
+                seed_ratio=seed_ratio,
+                color_tolerance=max(8, color_tolerance // 2),
+                kernel_size=1,
+            ),
+        ),
+        dtype=np.float32,
+    )
+    seed_after = np.array(
+        _mean_color_in_mask(
+            crop_after,
+            _segment_button_body(
+                crop_after,
+                seed_ratio=seed_ratio,
+                color_tolerance=max(8, color_tolerance // 2),
+                kernel_size=1,
+            ),
+        ),
+        dtype=np.float32,
+    )
+    anchors = np.stack([seed_before, seed_after], axis=0)
+
+    mask_before = _segment_button_body(
+        crop_before,
+        seed_ratio=seed_ratio,
+        color_tolerance=color_tolerance,
+        kernel_size=kernel_size,
+        anchor_colors=anchors,
+    )
+    mask_after = _segment_button_body(
+        crop_after,
+        seed_ratio=seed_ratio,
+        color_tolerance=color_tolerance,
+        kernel_size=kernel_size,
+        anchor_colors=anchors,
+    )
+    h, w = mask_before.shape
+    cy, cx = h // 2, w // 2
+
+    union = mask_before | mask_after
+    inter = mask_before & mask_after
+    coverage_before = float(mask_before.mean())
+    coverage_after = float(mask_after.mean())
+    iou = float(inter.sum() / max(1, union.sum()))
+
+    mean_before = _mean_color_in_mask(crop_before, mask_before)
+    mean_after = _mean_color_in_mask(crop_after, mask_after)
+    color_delta = float(
+        np.sqrt(sum((mean_after[i] - mean_before[i]) ** 2 for i in range(3)))
+    )
+
+    return {
+        "mask_before_coverage": coverage_before,
+        "mask_after_coverage": coverage_after,
+        "mask_iou": iou,
+        "center_hit_before": bool(mask_before[cy, cx]),
+        "center_hit_after": bool(mask_after[cy, cx]),
+        "mask_mean_color_before": mean_before,
+        "mask_mean_color_after": mean_after,
+        "mask_color_delta": color_delta,
+    }
+
+
+def _resolve_auto_color_mode(payload: Dict[str, Any]) -> str:
+    mode = str(payload.get("auto_color_mode", DEFAULT_AUTO_COLOR_MODE)).strip().lower()
+    if mode not in AUTO_COLOR_MODES:
+        valid = ", ".join(AUTO_COLOR_MODES)
+        raise ValueError(f"Invalid auto_color_mode={mode!r}. Valid values: {valid}")
+    return mode
+
+
+def _luma_diff_stats(before: Image.Image, after: Image.Image) -> Dict[str, float]:
+    """
+    Perceptual luminance diff stats used for "human-invisible noise" gating.
+    """
+    a = np.array(before.convert("RGB"), dtype=np.float32)
+    b_img = after if after.size == before.size else after.resize(before.size)
+    b = np.array(b_img.convert("RGB"), dtype=np.float32)
+    da = np.abs(
+        (0.299 * (b[:, :, 0] - a[:, :, 0]))
+        + (0.587 * (b[:, :, 1] - a[:, :, 1]))
+        + (0.114 * (b[:, :, 2] - a[:, :, 2]))
+    )
+    return {
+        "mean": float(np.mean(da)),
+        "p95": float(np.percentile(da, 95)),
+    }
 
 
 def _resolve_expected_color(payload: Dict[str, Any]) -> Optional[Tuple[int, int, int]]:
@@ -88,6 +307,7 @@ def check_button_color(
 
     crop_after = img_after.crop(bounds.as_box())
     before_color = None
+    crop_before: Optional[Image.Image] = None
     img_before: Optional[Image.Image] = None
     if payload.get("screenshot_a"):
         img_before = load_image(payload["screenshot_a"])
@@ -138,56 +358,282 @@ def check_button_color(
     #     spuriously fire the veto.  Coverage in this regime correlates with
     #     "real activation candidates have outline_iou ≈ 0", so the iou
     #     threshold filters them out anyway.
+    metrics: Dict[str, Any] = {}
+    outline: Dict[str, Any] = {}
+    pixel_diff_threshold = DEFAULT_PIXEL_DIFF_THRESHOLD
+    score_threshold = DEFAULT_STRUCTURE_THRESHOLD
+    mask_dilate_radius = DEFAULT_MASK_DILATE_RADIUS
+    outline_max_shift = DEFAULT_OUTLINE_MAX_SHIFT
+    outline_veto_active = False
+    outline_iou_veto = DEFAULT_OUTLINE_IOU_VETO
+    outline_veto_min_cov = DEFAULT_OUTLINE_VETO_MIN_COV
+    outline_veto_max_cov = DEFAULT_OUTLINE_VETO_MAX_COV
+    outline_high_cov_iou_veto = DEFAULT_OUTLINE_HIGH_COV_IOU_VETO
+    outline_high_cov_min = DEFAULT_OUTLINE_HIGH_COV_MIN
+    outline_high_cov_max_color_delta = DEFAULT_OUTLINE_HIGH_COV_MAX_COLOR_DELTA
+    outline_high_cov_max_coherence = DEFAULT_OUTLINE_HIGH_COV_MAX_COHERENCE
+    low_outline_high_diff_cov = 0.85
+    low_outline_max_cov = 0.20
+    low_outline_min_coherence = 0.85
+    low_outline_max_iou = 0.74
+    static_low_centrality_max = 0.35
+    perceptual_low_score_max = 0.40
+    perceptual_jnd_p95_max = 8.0
+    perceptual_jnd_mean_max = 2.2
+    tiny_color_low_score_max = 0.40
+    tiny_color_max_delta = 2
+    low_outline_extreme_cov_min = 0.90
+    low_outline_extreme_outcov_max = 0.12
+    low_outline_extreme_iou_max = 0.62
+    low_outline_extreme_coherence_min = 0.82
+    near_static_mid_outline_cov_min = 0.35
+    near_static_mid_outline_cov_max = 0.55
+    near_static_mid_outline_iou_min = 0.75
+    near_static_mid_coverage_min = 0.95
+    near_static_mid_coherence_min = 0.95
+    near_static_mid_centrality_min = 0.40
+    near_static_mid_centrality_max = 0.60
+    near_static_mid_max_color_delta = 6
+    auto_color_mode = DEFAULT_AUTO_COLOR_MODE
+    details_seg: Dict[str, Any] = {}
+    luma_stats: Dict[str, float] = {"mean": 0.0, "p95": 0.0}
+    veto_reasons: list[str] = []
+
     if expected_color is None:
+        auto_color_mode = _resolve_auto_color_mode(payload)
         if before_color is None:
             raise ValueError("expected_color=None but no screenshot_a provided for comparison.")
+        if crop_before is None:
+            raise ValueError("expected_color=None but screenshot_a crop is unavailable.")
 
-        pixel_diff_threshold = int(
-            payload.get("pixel_diff_threshold")
-            or payload.get("pixel_threshold")
-            or DEFAULT_PIXEL_DIFF_THRESHOLD
-        )
-        score_threshold = float(
-            payload.get("structure_threshold")
-            or payload.get("score_threshold")
-            or DEFAULT_STRUCTURE_THRESHOLD
-        )
-        outline_iou_veto = float(
-            payload.get("outline_iou_veto") or DEFAULT_OUTLINE_IOU_VETO
-        )
-        outline_veto_min_cov = float(
-            payload.get("outline_veto_min_coverage") or DEFAULT_OUTLINE_VETO_MIN_COV
-        )
-        outline_veto_max_cov = float(
-            payload.get("outline_veto_max_coverage") or DEFAULT_OUTLINE_VETO_MAX_COV
-        )
-        _mdr = payload.get("mask_dilate_radius")
-        mask_dilate_radius = int(_mdr) if _mdr is not None else DEFAULT_MASK_DILATE_RADIUS
-        _oms = payload.get("outline_max_shift")
-        outline_max_shift = int(_oms) if _oms is not None else DEFAULT_OUTLINE_MAX_SHIFT
+        if auto_color_mode == "pure_segmentation":
+            seg_seed_ratio = float(
+                payload.get("seg_seed_ratio") or DEFAULT_SEGMENTATION_SEED_RATIO
+            )
+            seg_color_tolerance = int(
+                payload.get("seg_color_tolerance") or DEFAULT_SEGMENTATION_COLOR_TOLERANCE
+            )
+            seg_min_coverage = float(
+                payload.get("seg_min_coverage") or DEFAULT_SEGMENTATION_MIN_COVERAGE
+            )
+            seg_max_coverage = float(
+                payload.get("seg_max_coverage") or DEFAULT_SEGMENTATION_MAX_COVERAGE
+            )
+            seg_min_iou = float(payload.get("seg_min_iou") or DEFAULT_SEGMENTATION_MIN_IOU)
+            seg_color_delta_threshold = float(
+                payload.get("seg_color_delta_threshold")
+                or DEFAULT_SEGMENTATION_COLOR_DELTA_THRESHOLD
+            )
+            seg_kernel_size = int(payload.get("seg_kernel_size") or DEFAULT_SEGMENTATION_KERNEL)
 
-        metrics = diff_structure_score(
-            crop_before,
-            crop_after,
-            pixel_diff_threshold=pixel_diff_threshold,
-            mask_dilate_radius=mask_dilate_radius,
-        )
-        outline = outline_iou_and_coverage(crop_before, crop_after, max_shift=outline_max_shift)
+            seg_metrics = _segmentation_activation_score(
+                crop_before,
+                crop_after,
+                seed_ratio=seg_seed_ratio,
+                color_tolerance=seg_color_tolerance,
+                kernel_size=seg_kernel_size,
+            )
+            cov_before = seg_metrics["mask_before_coverage"]
+            cov_after = seg_metrics["mask_after_coverage"]
+            cov_ok = (
+                seg_min_coverage <= cov_before <= seg_max_coverage
+                and seg_min_coverage <= cov_after <= seg_max_coverage
+            )
+            center_ok = seg_metrics["center_hit_before"] and seg_metrics["center_hit_after"]
+            iou_ok = seg_metrics["mask_iou"] >= seg_min_iou
+            delta_ok = seg_metrics["mask_color_delta"] >= seg_color_delta_threshold
 
-        score = metrics["score"]
-        is_overlay_icon = outline_veto_min_cov <= outline["coverage"] <= outline_veto_max_cov
-        outline_veto_active = is_overlay_icon and outline["iou"] >= outline_iou_veto
-        passed = (score > score_threshold) and not outline_veto_active
+            passed = cov_ok and center_ok and iou_ok and delta_ok
+            basis = (
+                "auto_color_change(pure_segmentation): "
+                f"delta={seg_metrics['mask_color_delta']:.3f}>={seg_color_delta_threshold:.2f}"
+                f"={'Y' if delta_ok else 'N'} "
+                f"iou={seg_metrics['mask_iou']:.3f}>={seg_min_iou:.2f}={'Y' if iou_ok else 'N'} "
+                f"cov_a={cov_before:.3f} cov_b={cov_after:.3f} "
+                f"center_ok={'Y' if center_ok else 'N'}"
+            )
+            metrics = {
+                "score": 0.0,
+                "concentration": 0.0,
+                "coherence": 0.0,
+                "centrality": 0.0,
+                "coverage": 0.0,
+                "n_changed": 0,
+            }
+            outline = {
+                "ink_color": "N/A",
+                "count_a": 0,
+                "count_b": 0,
+                "coverage": 0.0,
+                "iou": 0.0,
+                "shift": (0, 0),
+            }
+            luma_stats = _luma_diff_stats(crop_before, crop_after)
+            veto_reasons = []
+            details_seg = {
+                "seg_seed_ratio": seg_seed_ratio,
+                "seg_color_tolerance": seg_color_tolerance,
+                "seg_min_coverage": seg_min_coverage,
+                "seg_max_coverage": seg_max_coverage,
+                "seg_min_iou": seg_min_iou,
+                "seg_color_delta_threshold": seg_color_delta_threshold,
+                "seg_kernel_size": seg_kernel_size,
+                **seg_metrics,
+                "seg_cov_ok": cov_ok,
+                "seg_center_ok": center_ok,
+                "seg_iou_ok": iou_ok,
+                "seg_delta_ok": delta_ok,
+            }
+        else:
+            details_seg = {}
+            pixel_diff_threshold = int(
+                payload.get("pixel_diff_threshold")
+                or payload.get("pixel_threshold")
+                or DEFAULT_PIXEL_DIFF_THRESHOLD
+            )
+            score_threshold = float(
+                payload.get("structure_threshold")
+                or payload.get("score_threshold")
+                or DEFAULT_STRUCTURE_THRESHOLD
+            )
+            outline_iou_veto = float(
+                payload.get("outline_iou_veto") or DEFAULT_OUTLINE_IOU_VETO
+            )
+            outline_veto_min_cov = float(
+                payload.get("outline_veto_min_coverage") or DEFAULT_OUTLINE_VETO_MIN_COV
+            )
+            outline_veto_max_cov = float(
+                payload.get("outline_veto_max_coverage") or DEFAULT_OUTLINE_VETO_MAX_COV
+            )
+            _mdr = payload.get("mask_dilate_radius")
+            mask_dilate_radius = int(_mdr) if _mdr is not None else DEFAULT_MASK_DILATE_RADIUS
+            _oms = payload.get("outline_max_shift")
+            outline_max_shift = int(_oms) if _oms is not None else DEFAULT_OUTLINE_MAX_SHIFT
+            outline_high_cov_iou_veto = float(
+                payload.get("outline_high_cov_iou_veto") or DEFAULT_OUTLINE_HIGH_COV_IOU_VETO
+            )
+            outline_high_cov_min = float(
+                payload.get("outline_high_cov_min") or DEFAULT_OUTLINE_HIGH_COV_MIN
+            )
+            outline_high_cov_max_color_delta = int(
+                payload.get("outline_high_cov_max_color_delta") or DEFAULT_OUTLINE_HIGH_COV_MAX_COLOR_DELTA
+            )
+            outline_high_cov_max_coherence = float(
+                payload.get("outline_high_cov_max_coherence") or DEFAULT_OUTLINE_HIGH_COV_MAX_COHERENCE
+            )
+            low_outline_high_diff_cov = float(payload.get("low_outline_high_diff_cov", 0.85))
+            low_outline_max_cov = float(payload.get("low_outline_max_cov", 0.20))
+            low_outline_min_coherence = float(payload.get("low_outline_min_coherence", 0.85))
+            low_outline_max_iou = float(payload.get("low_outline_max_iou", 0.74))
+            static_low_centrality_max = float(payload.get("static_low_centrality_max", 0.35))
+            perceptual_low_score_max = float(payload.get("perceptual_low_score_max", 0.40))
+            perceptual_jnd_p95_max = float(payload.get("perceptual_jnd_p95_max", 8.0))
+            perceptual_jnd_mean_max = float(payload.get("perceptual_jnd_mean_max", 2.2))
+            tiny_color_low_score_max = float(payload.get("tiny_color_low_score_max", 0.40))
+            tiny_color_max_delta = int(payload.get("tiny_color_max_delta", 2))
+            low_outline_extreme_cov_min = float(payload.get("low_outline_extreme_cov_min", 0.90))
+            low_outline_extreme_outcov_max = float(payload.get("low_outline_extreme_outcov_max", 0.12))
+            low_outline_extreme_iou_max = float(payload.get("low_outline_extreme_iou_max", 0.62))
+            low_outline_extreme_coherence_min = float(payload.get("low_outline_extreme_coherence_min", 0.82))
+            near_static_mid_outline_cov_min = float(payload.get("near_static_mid_outline_cov_min", 0.35))
+            near_static_mid_outline_cov_max = float(payload.get("near_static_mid_outline_cov_max", 0.55))
+            near_static_mid_outline_iou_min = float(payload.get("near_static_mid_outline_iou_min", 0.75))
+            near_static_mid_coverage_min = float(payload.get("near_static_mid_coverage_min", 0.95))
+            near_static_mid_coherence_min = float(payload.get("near_static_mid_coherence_min", 0.95))
+            near_static_mid_centrality_min = float(payload.get("near_static_mid_centrality_min", 0.40))
+            near_static_mid_centrality_max = float(payload.get("near_static_mid_centrality_max", 0.60))
+            near_static_mid_max_color_delta = int(payload.get("near_static_mid_max_color_delta", 6))
 
-        basis = (
-            f"auto_color_change(structure+outline): "
-            f"score={score:.3f}>{score_threshold:.2f}={'Y' if score > score_threshold else 'N'} "
-            f"outline_iou={outline['iou']:.3f} coverage={outline['coverage']:.3f} "
-            f"veto={'fired' if outline_veto_active else 'idle'} "
-            f"[concentration={metrics['concentration']:.3f} "
-            f"coherence={metrics['coherence']:.3f} "
-            f"centrality={metrics['centrality']:.3f}]"
-        )
+            metrics = diff_structure_score(
+                crop_before,
+                crop_after,
+                pixel_diff_threshold=pixel_diff_threshold,
+                mask_dilate_radius=mask_dilate_radius,
+            )
+            outline = outline_iou_and_coverage(crop_before, crop_after, max_shift=outline_max_shift)
+            luma_stats = _luma_diff_stats(crop_before, crop_after)
+            base_color_delta = max(abs(dom_color[i] - before_color[i]) for i in range(3))
+
+            score = metrics["score"]
+            is_overlay_icon = outline_veto_min_cov <= outline["coverage"] <= outline_veto_max_cov
+            is_high_cov_static = (
+                outline["coverage"] >= outline_high_cov_min
+                and outline["iou"] >= outline_high_cov_iou_veto
+                and base_color_delta <= outline_high_cov_max_color_delta
+                and metrics["coherence"] <= outline_high_cov_max_coherence
+            )
+            is_low_outline_massive_drift = (
+                metrics["coverage"] >= low_outline_high_diff_cov
+                and outline["coverage"] <= low_outline_max_cov
+                and metrics["coherence"] >= low_outline_min_coherence
+                and outline["iou"] <= low_outline_max_iou
+            )
+            is_static_high_iou_low_centrality = (
+                outline["coverage"] >= 0.60
+                and outline["iou"] >= outline_iou_veto
+                and metrics["centrality"] <= static_low_centrality_max
+            )
+            is_perceptual_low_score_noise = (
+                score <= perceptual_low_score_max
+                and luma_stats["p95"] <= perceptual_jnd_p95_max
+                and luma_stats["mean"] <= perceptual_jnd_mean_max
+            )
+            is_tiny_color_low_score_noise = (
+                score <= tiny_color_low_score_max and base_color_delta <= tiny_color_max_delta
+            )
+            is_low_outline_extreme_drift = (
+                metrics["coverage"] >= low_outline_extreme_cov_min
+                and outline["coverage"] <= low_outline_extreme_outcov_max
+                and outline["iou"] <= low_outline_extreme_iou_max
+                and metrics["coherence"] >= low_outline_extreme_coherence_min
+            )
+            is_near_static_mid_outline = (
+                metrics["coverage"] >= near_static_mid_coverage_min
+                and metrics["coherence"] >= near_static_mid_coherence_min
+                and near_static_mid_centrality_min <= metrics["centrality"] <= near_static_mid_centrality_max
+                and near_static_mid_outline_cov_min <= outline["coverage"] <= near_static_mid_outline_cov_max
+                and outline["iou"] >= near_static_mid_outline_iou_min
+                and base_color_delta <= near_static_mid_max_color_delta
+            )
+
+            outline_veto_active = (
+                (is_overlay_icon and outline["iou"] >= outline_iou_veto)
+                or is_high_cov_static
+                or is_low_outline_massive_drift
+                or is_static_high_iou_low_centrality
+                or is_perceptual_low_score_noise
+                or is_tiny_color_low_score_noise
+                or is_low_outline_extreme_drift
+                or is_near_static_mid_outline
+            )
+            if is_overlay_icon and outline["iou"] >= outline_iou_veto:
+                veto_reasons.append("overlay_icon_iou")
+            if is_high_cov_static:
+                veto_reasons.append("high_cov_static")
+            if is_low_outline_massive_drift:
+                veto_reasons.append("low_outline_massive_drift")
+            if is_static_high_iou_low_centrality:
+                veto_reasons.append("static_high_iou_low_centrality")
+            if is_perceptual_low_score_noise:
+                veto_reasons.append("perceptual_low_score_noise")
+            if is_tiny_color_low_score_noise:
+                veto_reasons.append("tiny_color_low_score_noise")
+            if is_low_outline_extreme_drift:
+                veto_reasons.append("low_outline_extreme_drift")
+            if is_near_static_mid_outline:
+                veto_reasons.append("near_static_mid_outline")
+            passed = (score > score_threshold) and not outline_veto_active
+
+            basis = (
+                f"auto_color_change(structure+outline): "
+                f"score={score:.3f}>{score_threshold:.2f}={'Y' if score > score_threshold else 'N'} "
+                f"outline_iou={outline['iou']:.3f} coverage={outline['coverage']:.3f} "
+                f"veto={'fired' if outline_veto_active else 'idle'}"
+                f"{'[' + ','.join(veto_reasons) + ']' if veto_reasons else ''} "
+                f"[concentration={metrics['concentration']:.3f} "
+                f"coherence={metrics['coherence']:.3f} "
+                f"centrality={metrics['centrality']:.3f}]"
+            )
         # Keep these for backward-compatible report fields.
         channel_diff = tuple(abs(dom_color[i] - before_color[i]) for i in range(3))
         max_diff = max(channel_diff)
@@ -226,6 +672,7 @@ def check_button_color(
     if expected_color is None:
         details.update(
             {
+                "auto_color_mode": auto_color_mode,
                 "structure_score": metrics["score"],
                 "concentration": metrics["concentration"],
                 "coherence": metrics["coherence"],
@@ -246,7 +693,38 @@ def check_button_color(
                 "outline_iou_veto": outline_iou_veto,
                 "outline_veto_min_coverage": outline_veto_min_cov,
                 "outline_veto_max_coverage": outline_veto_max_cov,
+                "outline_high_cov_iou_veto": outline_high_cov_iou_veto,
+                "outline_high_cov_min": outline_high_cov_min,
+                "outline_high_cov_max_color_delta": outline_high_cov_max_color_delta,
+                "outline_high_cov_max_coherence": outline_high_cov_max_coherence,
+                "luma_diff_mean": luma_stats["mean"],
+                "luma_diff_p95": luma_stats["p95"],
+                "low_outline_high_diff_cov": low_outline_high_diff_cov,
+                "low_outline_max_cov": low_outline_max_cov,
+                "low_outline_min_coherence": low_outline_min_coherence,
+                "low_outline_max_iou": low_outline_max_iou,
+                "static_low_centrality_max": static_low_centrality_max,
+                "perceptual_low_score_max": perceptual_low_score_max,
+                "perceptual_jnd_p95_max": perceptual_jnd_p95_max,
+                "perceptual_jnd_mean_max": perceptual_jnd_mean_max,
+                "tiny_color_low_score_max": tiny_color_low_score_max,
+                "tiny_color_max_delta": tiny_color_max_delta,
+                "low_outline_extreme_cov_min": low_outline_extreme_cov_min,
+                "low_outline_extreme_outcov_max": low_outline_extreme_outcov_max,
+                "low_outline_extreme_iou_max": low_outline_extreme_iou_max,
+                "low_outline_extreme_coherence_min": low_outline_extreme_coherence_min,
+                "near_static_mid_outline_cov_min": near_static_mid_outline_cov_min,
+                "near_static_mid_outline_cov_max": near_static_mid_outline_cov_max,
+                "near_static_mid_outline_iou_min": near_static_mid_outline_iou_min,
+                "near_static_mid_coverage_min": near_static_mid_coverage_min,
+                "near_static_mid_coherence_min": near_static_mid_coherence_min,
+                "near_static_mid_centrality_min": near_static_mid_centrality_min,
+                "near_static_mid_centrality_max": near_static_mid_centrality_max,
+                "near_static_mid_max_color_delta": near_static_mid_max_color_delta,
+                "veto_reasons": veto_reasons,
             }
         )
+        if auto_color_mode == "pure_segmentation":
+            details.update(details_seg)
 
     return CheckResult(passed=passed, basis=basis, control_info=control, details=details)

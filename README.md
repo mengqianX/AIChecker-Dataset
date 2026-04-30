@@ -54,34 +54,113 @@ testcase/
 - `tolerance`（可选）：颜色变化检测的容差值，默认 20。
 - `label`（已弃用，保留以向后兼容）：`pass` / `fail`，等同于 `expected_passed`。
 
-## 使用方法
+## 运行指南（从环境配置开始）
 
-### 独立使用数据集
+### 1) 环境要求
 
-1. 克隆本仓库：
-   ```bash
-   git clone <dataset-repo-url>
-   cd AIChecker-Dataset
-   ```
+- Python `>=3.10`
+- macOS / Linux（Windows 请将激活命令改为对应 PowerShell/CMD 版本）
 
-2. 读取 `jsons/` 中配置，定位按钮区域。
-3. 对 `screens/` 截图裁剪并比较颜色变化。
-4. 将检测输出与 `label` 比较，评估算法准确率。
+### 2) 克隆仓库
 
-### 配合工具仓库使用
+```bash
+git clone <dataset-repo-url>
+cd AIChecker-Dataset
+```
 
-1. 克隆工具仓库：
-   ```bash
-   git clone <tool-repo-url> AIChecker
-   ```
+### 3) 创建并激活虚拟环境
 
-2. 在工具仓库中配置数据集路径（参考工具仓库的 README）。
+macOS / Linux:
 
-3. 运行评估：
-   ```bash
-   cd AIChecker
-   python evaluate.py --dataset ../AIChecker-Dataset
-   ```
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+```
+
+Windows PowerShell:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+```
+
+Windows CMD:
+
+```bat
+py -3 -m venv .venv
+.\.venv\Scripts\activate.bat
+python -m pip install -U pip
+```
+
+### 4) 安装依赖
+
+仓库内的 Python 包位于 `AIChecker/`，推荐开发安装：
+
+```bash
+pip install -e "./AIChecker[dev]"
+
+```
+
+### 5) 配置环境变量（API Key 等）
+
+```bash
+cp .env.example .env
+```
+
+然后编辑 `.env`，至少配置你要使用后端对应的 key，例如：
+
+- `DASHSCOPE_API_KEY`（Qwen）
+- `UI_TARS_BASE_URL` + `UI_TARS_API_KEY`（UI-TARS）
+- `MAI_UI_BASE_URL` + `MAI_UI_API_KEY`（MAI-UI）
+
+> 测试会自动尝试加载仓库根目录的 `.env`。
+
+### 6) 运行按钮颜色回归测试
+
+在仓库根目录执行（Windows / macOS / Linux 通用）：
+
+```bash
+python -m pytest AIChecker/tests/regression/test_button_cases.py -q
+```
+
+可选参数（通过环境变量控制）：
+
+- `BUTTON_COLOR_PROFILE`：`default` / `strict` / `robust`
+- `BUTTON_COLOR_MODE`：`hybrid` / `pure_segmentation`
+
+示例（Windows PowerShell 写法）：
+
+```powershell
+$env:BUTTON_COLOR_PROFILE="robust"
+$env:BUTTON_COLOR_MODE="hybrid"
+python -m pytest AIChecker/tests/regression/test_button_cases.py -q
+```
+
+示例（macOS / Linux 写法）：
+
+```bash
+BUTTON_COLOR_PROFILE=robust BUTTON_COLOR_MODE=hybrid \
+python -m pytest AIChecker/tests/regression/test_button_cases.py -q
+```
+
+### 7) 一键执行测试并生成报告（推荐）
+
+```bash
+python scripts/testing/run_button_pipeline.py \
+  --test-target AIChecker/tests/regression/test_button_cases.py \
+  --button-profile default \
+  --button-mode hybrid
+```
+
+运行完成后，可在 `AIChecker/reports/` 和 `AIChecker/reports/history/` 查看测试记录与汇总结果。
+
+## 数据集独立使用
+
+1. 读取 `jsons/` 中配置，定位按钮区域。
+2. 对 `screens/` 截图裁剪并比较颜色变化。
+3. 将检测输出与 `expected_passed`（或兼容字段 `label`）比较，评估算法准确率。
 
 ## 版本管理
 
