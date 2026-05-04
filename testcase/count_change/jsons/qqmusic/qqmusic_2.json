@@ -1,8 +1,0 @@
-{
-    "type": "count_change",
-    "screenshot_a": "../../screens/qqmusic/qqmusic_before_2.png",
-    "screenshot_b": "../../screens/qqmusic/qqmusic_after_2.png",
-    "bounds": [546, 151, 654, 224],
-    "expected_passed": true,
-    "label": "pass"
-}

@@ -66,3 +66,6 @@ AIChecker/tests/image_match_output_compare/root
 .env.*.local
 
 .specstory/
+
+# Excluded in lightweight branches (testcase files kept locally)
+testcase/

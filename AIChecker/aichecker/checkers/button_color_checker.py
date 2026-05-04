@@ -38,6 +38,10 @@ DEFAULT_OUTLINE_HIGH_COV_IOU_VETO = 0.95    # in heavy blur/compression, unchang
 DEFAULT_OUTLINE_HIGH_COV_MIN = 0.70          # enable a conservative static-control veto in that regime
 DEFAULT_OUTLINE_HIGH_COV_MAX_COLOR_DELTA = 6  # only veto if dominant/base colour drift is tiny
 DEFAULT_OUTLINE_HIGH_COV_MAX_COHERENCE = 0.75  # avoid vetoing genuine coherent activations
+DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_SCORE = 0.80
+DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COHERENCE = 0.90
+DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_CENTRALITY = 0.55
+DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COLOR_DELTA = 10
 DEFAULT_OUTLINE_MAX_SHIFT = 4           # search [-4, +4] pixel translations when computing
                                         # outline IoU, so that small layout jitter / video
                                         # overlay drift / capture-time animation doesn't
@@ -394,6 +398,10 @@ def check_button_color(
     near_static_mid_centrality_min = 0.40
     near_static_mid_centrality_max = 0.60
     near_static_mid_max_color_delta = 6
+    overlay_strong_activation_min_score = DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_SCORE
+    overlay_strong_activation_min_coherence = DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COHERENCE
+    overlay_strong_activation_min_centrality = DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_CENTRALITY
+    overlay_strong_activation_min_color_delta = DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COLOR_DELTA
     auto_color_mode = DEFAULT_AUTO_COLOR_MODE
     details_seg: Dict[str, Any] = {}
     luma_stats: Dict[str, float] = {"mean": 0.0, "p95": 0.0}
@@ -543,6 +551,30 @@ def check_button_color(
             near_static_mid_centrality_min = float(payload.get("near_static_mid_centrality_min", 0.40))
             near_static_mid_centrality_max = float(payload.get("near_static_mid_centrality_max", 0.60))
             near_static_mid_max_color_delta = int(payload.get("near_static_mid_max_color_delta", 6))
+            overlay_strong_activation_min_score = float(
+                payload.get(
+                    "overlay_strong_activation_min_score",
+                    DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_SCORE,
+                )
+            )
+            overlay_strong_activation_min_coherence = float(
+                payload.get(
+                    "overlay_strong_activation_min_coherence",
+                    DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COHERENCE,
+                )
+            )
+            overlay_strong_activation_min_centrality = float(
+                payload.get(
+                    "overlay_strong_activation_min_centrality",
+                    DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_CENTRALITY,
+                )
+            )
+            overlay_strong_activation_min_color_delta = int(
+                payload.get(
+                    "overlay_strong_activation_min_color_delta",
+                    DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COLOR_DELTA,
+                )
+            )
 
             metrics = diff_structure_score(
                 crop_before,
@@ -556,6 +588,12 @@ def check_button_color(
 
             score = metrics["score"]
             is_overlay_icon = outline_veto_min_cov <= outline["coverage"] <= outline_veto_max_cov
+            is_overlay_strong_activation = (
+                score >= overlay_strong_activation_min_score
+                and metrics["coherence"] >= overlay_strong_activation_min_coherence
+                and metrics["centrality"] >= overlay_strong_activation_min_centrality
+                and base_color_delta >= overlay_strong_activation_min_color_delta
+            )
             is_high_cov_static = (
                 outline["coverage"] >= outline_high_cov_min
                 and outline["iou"] >= outline_high_cov_iou_veto
@@ -597,7 +635,7 @@ def check_button_color(
             )
 
             outline_veto_active = (
-                (is_overlay_icon and outline["iou"] >= outline_iou_veto)
+                (is_overlay_icon and outline["iou"] >= outline_iou_veto and not is_overlay_strong_activation)
                 or is_high_cov_static
                 or is_low_outline_massive_drift
                 or is_static_high_iou_low_centrality
@@ -606,8 +644,10 @@ def check_button_color(
                 or is_low_outline_extreme_drift
                 or is_near_static_mid_outline
             )
-            if is_overlay_icon and outline["iou"] >= outline_iou_veto:
+            if is_overlay_icon and outline["iou"] >= outline_iou_veto and not is_overlay_strong_activation:
                 veto_reasons.append("overlay_icon_iou")
+            if is_overlay_icon and outline["iou"] >= outline_iou_veto and is_overlay_strong_activation:
+                veto_reasons.append("overlay_icon_iou_waived_strong_activation")
             if is_high_cov_static:
                 veto_reasons.append("high_cov_static")
             if is_low_outline_massive_drift:
@@ -721,6 +761,10 @@ def check_button_color(
                 "near_static_mid_centrality_min": near_static_mid_centrality_min,
                 "near_static_mid_centrality_max": near_static_mid_centrality_max,
                 "near_static_mid_max_color_delta": near_static_mid_max_color_delta,
+                "overlay_strong_activation_min_score": overlay_strong_activation_min_score,
+                "overlay_strong_activation_min_coherence": overlay_strong_activation_min_coherence,
+                "overlay_strong_activation_min_centrality": overlay_strong_activation_min_centrality,
+                "overlay_strong_activation_min_color_delta": overlay_strong_activation_min_color_delta,
                 "veto_reasons": veto_reasons,
             }
         )

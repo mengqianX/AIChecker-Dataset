@@ -1,8 +1,0 @@
-{
-  "type": "image_match",
-  "template_image": "../../screens/changlian/changlian_template_5.png",
-  "target_image": "../../screens/changlian/changlian_target_3.png",
-  "expected_passed": true,
-  "expected_bounds": [],
-  "bounds_tolerance": 40
-}
