@@ -42,6 +42,15 @@ DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_SCORE = 0.80
 DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COHERENCE = 0.90
 DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_CENTRALITY = 0.55
 DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COLOR_DELTA = 10
+DEFAULT_OVERLAY_GATE_MIN_COVERAGE = 0.01
+DEFAULT_OVERLAY_GATE_MAX_COVERAGE = 0.45
+DEFAULT_OVERLAY_GATE_MIN_STABLE_RATIO = 0.45
+DEFAULT_OVERLAY_GATE_MIN_STABLE_PIXELS = 10
+DEFAULT_OVERLAY_GATE_TARGET_COVERAGE = 0.12
+DEFAULT_OVERLAY_GATE_MIN_SCORE = 0.55
+DEFAULT_OVERLAY_IOU_PENALTY_WEIGHT = 0.22
+DEFAULT_OVERLAY_IOU_HARD_VETO = 0.90
+DEFAULT_OVERLAY_HARD_VETO_MAX_CENTRALITY = 0.55
 DEFAULT_LOW_OUTLINE_EXTREME_MIN_COVERAGE_FOR_VETO = 0.02
 DEFAULT_LOW_OUTLINE_EXTREME_MIN_INK_PIXELS = 8
 DEFAULT_OUTLINE_MAX_SHIFT = 4           # search [-4, +4] pixel translations when computing
@@ -263,6 +272,45 @@ def _luma_diff_stats(before: Image.Image, after: Image.Image) -> Dict[str, float
     }
 
 
+def _overlay_applicability(
+    outline: Dict[str, Any],
+    *,
+    min_coverage: float,
+    max_coverage: float,
+    min_stable_ratio: float,
+    min_stable_pixels: int,
+    target_coverage: float,
+    min_score: float,
+) -> Dict[str, float | bool]:
+    """
+    Decide whether overlay-outline IoU logic should participate in voting.
+    """
+    coverage = float(outline.get("coverage", 0.0))
+    count_a = int(outline.get("count_a", 0))
+    count_b = int(outline.get("count_b", 0))
+    stable_pixels = min(count_a, count_b)
+    stable_ratio = stable_pixels / max(1, max(count_a, count_b))
+    coverage_span = max(1e-6, max_coverage - min_coverage)
+    coverage_delta = abs(coverage - target_coverage)
+    coverage_score = max(0.0, 1.0 - min(1.0, coverage_delta / (0.5 * coverage_span)))
+    stable_ratio_score = min(1.0, stable_ratio / max(min_stable_ratio, 1e-6))
+    stable_pixels_score = min(1.0, stable_pixels / max(1, min_stable_pixels))
+    score = 0.45 * coverage_score + 0.35 * stable_ratio_score + 0.20 * stable_pixels_score
+    applicable = (
+        min_coverage <= coverage <= max_coverage
+        and stable_ratio >= min_stable_ratio
+        and stable_pixels >= min_stable_pixels
+        and score >= min_score
+    )
+    return {
+        "applicable": applicable,
+        "score": float(score),
+        "stable_ratio": float(stable_ratio),
+        "stable_pixels": float(stable_pixels),
+        "coverage_score": float(coverage_score),
+    }
+
+
 def _resolve_expected_color(payload: Dict[str, Any]) -> Optional[Tuple[int, int, int]]:
     """
     Resolve expected color from payload.
@@ -404,6 +452,17 @@ def check_button_color(
     overlay_strong_activation_min_coherence = DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COHERENCE
     overlay_strong_activation_min_centrality = DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_CENTRALITY
     overlay_strong_activation_min_color_delta = DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COLOR_DELTA
+    overlay_gate_min_coverage = DEFAULT_OVERLAY_GATE_MIN_COVERAGE
+    overlay_gate_max_coverage = DEFAULT_OVERLAY_GATE_MAX_COVERAGE
+    overlay_gate_min_stable_ratio = DEFAULT_OVERLAY_GATE_MIN_STABLE_RATIO
+    overlay_gate_min_stable_pixels = DEFAULT_OVERLAY_GATE_MIN_STABLE_PIXELS
+    overlay_gate_target_coverage = DEFAULT_OVERLAY_GATE_TARGET_COVERAGE
+    overlay_gate_min_score = DEFAULT_OVERLAY_GATE_MIN_SCORE
+    overlay_iou_penalty_weight = DEFAULT_OVERLAY_IOU_PENALTY_WEIGHT
+    overlay_iou_hard_veto = DEFAULT_OVERLAY_IOU_HARD_VETO
+    overlay_hard_veto_max_centrality = DEFAULT_OVERLAY_HARD_VETO_MAX_CENTRALITY
+    overlay_gate: Dict[str, float | bool] = {"applicable": False, "score": 0.0}
+    overlay_iou_penalty = 0.0
     low_outline_extreme_min_coverage_for_veto = DEFAULT_LOW_OUTLINE_EXTREME_MIN_COVERAGE_FOR_VETO
     low_outline_extreme_min_ink_pixels = DEFAULT_LOW_OUTLINE_EXTREME_MIN_INK_PIXELS
     auto_color_mode = DEFAULT_AUTO_COLOR_MODE
@@ -511,12 +570,8 @@ def check_button_color(
             outline_iou_veto = float(
                 payload.get("outline_iou_veto") or DEFAULT_OUTLINE_IOU_VETO
             )
-            outline_veto_min_cov = float(
-                payload.get("outline_veto_min_coverage") or DEFAULT_OUTLINE_VETO_MIN_COV
-            )
-            outline_veto_max_cov = float(
-                payload.get("outline_veto_max_coverage") or DEFAULT_OUTLINE_VETO_MAX_COV
-            )
+            outline_veto_min_cov = float(payload.get("outline_veto_min_coverage") or DEFAULT_OUTLINE_VETO_MIN_COV)
+            outline_veto_max_cov = float(payload.get("outline_veto_max_coverage") or DEFAULT_OUTLINE_VETO_MAX_COV)
             _mdr = payload.get("mask_dilate_radius")
             mask_dilate_radius = int(_mdr) if _mdr is not None else DEFAULT_MASK_DILATE_RADIUS
             _oms = payload.get("outline_max_shift")
@@ -579,6 +634,48 @@ def check_button_color(
                     DEFAULT_OVERLAY_STRONG_ACTIVATION_MIN_COLOR_DELTA,
                 )
             )
+            overlay_gate_min_coverage = float(
+                payload.get("overlay_gate_min_coverage", DEFAULT_OVERLAY_GATE_MIN_COVERAGE)
+            )
+            overlay_gate_max_coverage = float(
+                payload.get("overlay_gate_max_coverage", DEFAULT_OVERLAY_GATE_MAX_COVERAGE)
+            )
+            overlay_gate_min_stable_ratio = float(
+                payload.get(
+                    "overlay_gate_min_stable_ratio",
+                    DEFAULT_OVERLAY_GATE_MIN_STABLE_RATIO,
+                )
+            )
+            overlay_gate_min_stable_pixels = int(
+                payload.get(
+                    "overlay_gate_min_stable_pixels",
+                    DEFAULT_OVERLAY_GATE_MIN_STABLE_PIXELS,
+                )
+            )
+            overlay_gate_target_coverage = float(
+                payload.get(
+                    "overlay_gate_target_coverage",
+                    DEFAULT_OVERLAY_GATE_TARGET_COVERAGE,
+                )
+            )
+            overlay_gate_min_score = float(
+                payload.get("overlay_gate_min_score", DEFAULT_OVERLAY_GATE_MIN_SCORE)
+            )
+            overlay_iou_penalty_weight = float(
+                payload.get(
+                    "overlay_iou_penalty_weight",
+                    DEFAULT_OVERLAY_IOU_PENALTY_WEIGHT,
+                )
+            )
+            overlay_iou_hard_veto = float(
+                payload.get("overlay_iou_hard_veto", DEFAULT_OVERLAY_IOU_HARD_VETO)
+            )
+            overlay_hard_veto_max_centrality = float(
+                payload.get(
+                    "overlay_hard_veto_max_centrality",
+                    DEFAULT_OVERLAY_HARD_VETO_MAX_CENTRALITY,
+                )
+            )
             low_outline_extreme_min_coverage_for_veto = float(
                 payload.get(
                     "low_outline_extreme_min_coverage_for_veto",
@@ -603,12 +700,38 @@ def check_button_color(
             base_color_delta = max(abs(dom_color[i] - before_color[i]) for i in range(3))
 
             score = metrics["score"]
-            is_overlay_icon = outline_veto_min_cov <= outline["coverage"] <= outline_veto_max_cov
+            overlay_gate = _overlay_applicability(
+                outline,
+                min_coverage=overlay_gate_min_coverage,
+                max_coverage=overlay_gate_max_coverage,
+                min_stable_ratio=overlay_gate_min_stable_ratio,
+                min_stable_pixels=overlay_gate_min_stable_pixels,
+                target_coverage=overlay_gate_target_coverage,
+                min_score=overlay_gate_min_score,
+            )
+            is_overlay_icon = bool(overlay_gate["applicable"])
             is_overlay_strong_activation = (
                 score >= overlay_strong_activation_min_score
                 and metrics["coherence"] >= overlay_strong_activation_min_coherence
                 and metrics["centrality"] >= overlay_strong_activation_min_centrality
                 and base_color_delta >= overlay_strong_activation_min_color_delta
+            )
+            overlay_iou_excess = max(0.0, outline["iou"] - outline_iou_veto) / max(
+                1e-6, 1.0 - outline_iou_veto
+            )
+            overlay_iou_penalty = (
+                overlay_iou_penalty_weight
+                * float(overlay_gate["score"])
+                * overlay_iou_excess
+                if is_overlay_icon and outline["iou"] >= outline_iou_veto and not is_overlay_strong_activation
+                else 0.0
+            )
+            effective_score = max(0.0, score - overlay_iou_penalty)
+            overlay_iou_hard_veto_fired = (
+                is_overlay_icon
+                and outline["iou"] >= overlay_iou_hard_veto
+                and metrics["centrality"] <= overlay_hard_veto_max_centrality
+                and not is_overlay_strong_activation
             )
             has_low_outline_extreme_veto_evidence = (
                 outline["coverage"] >= low_outline_extreme_min_coverage_for_veto
@@ -657,7 +780,7 @@ def check_button_color(
             )
 
             outline_veto_active = (
-                (is_overlay_icon and outline["iou"] >= outline_iou_veto and not is_overlay_strong_activation)
+                overlay_iou_hard_veto_fired
                 or is_high_cov_static
                 or is_low_outline_massive_drift
                 or is_static_high_iou_low_centrality
@@ -666,8 +789,10 @@ def check_button_color(
                 or is_low_outline_extreme_drift
                 or is_near_static_mid_outline
             )
-            if is_overlay_icon and outline["iou"] >= outline_iou_veto and not is_overlay_strong_activation:
-                veto_reasons.append("overlay_icon_iou")
+            if overlay_iou_penalty > 0:
+                veto_reasons.append("overlay_icon_iou_soft_penalty")
+            if overlay_iou_hard_veto_fired:
+                veto_reasons.append("overlay_icon_iou_hard_veto")
             if is_overlay_icon and outline["iou"] >= outline_iou_veto and is_overlay_strong_activation:
                 veto_reasons.append("overlay_icon_iou_waived_strong_activation")
             if is_high_cov_static:
@@ -701,12 +826,15 @@ def check_button_color(
                 veto_reasons.append("low_outline_extreme_drift_waived_strong_activation")
             if is_near_static_mid_outline:
                 veto_reasons.append("near_static_mid_outline")
-            passed = (score > score_threshold) and not outline_veto_active
+            passed = (effective_score > score_threshold) and not outline_veto_active
 
             basis = (
                 f"auto_color_change(structure+outline): "
-                f"score={score:.3f}>{score_threshold:.2f}={'Y' if score > score_threshold else 'N'} "
+                f"score={score:.3f} effective={effective_score:.3f}>{score_threshold:.2f}"
+                f"={'Y' if effective_score > score_threshold else 'N'} "
                 f"outline_iou={outline['iou']:.3f} coverage={outline['coverage']:.3f} "
+                f"overlay_gate={int(bool(overlay_gate['applicable']))}:{float(overlay_gate['score']):.3f} "
+                f"overlay_penalty={overlay_iou_penalty:.3f} "
                 f"veto={'fired' if outline_veto_active else 'idle'}"
                 f"{'[' + ','.join(veto_reasons) + ']' if veto_reasons else ''} "
                 f"[concentration={metrics['concentration']:.3f} "
@@ -804,6 +932,21 @@ def check_button_color(
                 "overlay_strong_activation_min_coherence": overlay_strong_activation_min_coherence,
                 "overlay_strong_activation_min_centrality": overlay_strong_activation_min_centrality,
                 "overlay_strong_activation_min_color_delta": overlay_strong_activation_min_color_delta,
+                "overlay_gate_applicable": bool(overlay_gate.get("applicable", False)),
+                "overlay_gate_score": float(overlay_gate.get("score", 0.0)),
+                "overlay_gate_stable_ratio": float(overlay_gate.get("stable_ratio", 0.0)),
+                "overlay_gate_stable_pixels": float(overlay_gate.get("stable_pixels", 0.0)),
+                "overlay_gate_coverage_score": float(overlay_gate.get("coverage_score", 0.0)),
+                "overlay_gate_min_coverage": overlay_gate_min_coverage,
+                "overlay_gate_max_coverage": overlay_gate_max_coverage,
+                "overlay_gate_min_stable_ratio": overlay_gate_min_stable_ratio,
+                "overlay_gate_min_stable_pixels": overlay_gate_min_stable_pixels,
+                "overlay_gate_target_coverage": overlay_gate_target_coverage,
+                "overlay_gate_min_score": overlay_gate_min_score,
+                "overlay_iou_penalty_weight": overlay_iou_penalty_weight,
+                "overlay_iou_penalty": overlay_iou_penalty,
+                "overlay_iou_hard_veto": overlay_iou_hard_veto,
+                "overlay_hard_veto_max_centrality": overlay_hard_veto_max_centrality,
                 "low_outline_extreme_min_coverage_for_veto": low_outline_extreme_min_coverage_for_veto,
                 "low_outline_extreme_min_ink_pixels": low_outline_extreme_min_ink_pixels,
                 "veto_reasons": veto_reasons,
