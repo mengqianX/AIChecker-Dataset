@@ -7,7 +7,7 @@ import numpy as np
 from ..models import Bounds, CheckResult, ControlInfo
 from ..utils import (
     button_base_color,
-    diff_structure_score,
+    diff_structure_score, 
     load_image,
     outline_iou_and_coverage,
     parse_color,
@@ -51,8 +51,13 @@ DEFAULT_OVERLAY_GATE_MIN_SCORE = 0.55
 DEFAULT_OVERLAY_IOU_PENALTY_WEIGHT = 0.22
 DEFAULT_OVERLAY_IOU_HARD_VETO = 0.90
 DEFAULT_OVERLAY_HARD_VETO_MAX_CENTRALITY = 0.55
-DEFAULT_LOW_OUTLINE_EXTREME_MIN_COVERAGE_FOR_VETO = 0.02
-DEFAULT_LOW_OUTLINE_EXTREME_MIN_INK_PIXELS = 8
+DEFAULT_OVERLAY_BG_DRIFT_MIN_SCORE = 0.70
+DEFAULT_OVERLAY_BG_DRIFT_MIN_COHERENCE = 0.84
+DEFAULT_OVERLAY_BG_DRIFT_MIN_CENTRALITY = 0.40
+DEFAULT_OVERLAY_BG_DRIFT_MAX_CENTRALITY = 0.58
+DEFAULT_OVERLAY_BG_DRIFT_MAX_COVERAGE = 0.20
+DEFAULT_OVERLAY_BG_DRIFT_MIN_IOU = 0.35
+DEFAULT_OVERLAY_BG_DRIFT_MAX_IOU = 0.74
 DEFAULT_OUTLINE_MAX_SHIFT = 4           # search [-4, +4] pixel translations when computing
                                         # outline IoU, so that small layout jitter / video
                                         # overlay drift / capture-time animation doesn't
@@ -426,20 +431,12 @@ def check_button_color(
     outline_high_cov_min = DEFAULT_OUTLINE_HIGH_COV_MIN
     outline_high_cov_max_color_delta = DEFAULT_OUTLINE_HIGH_COV_MAX_COLOR_DELTA
     outline_high_cov_max_coherence = DEFAULT_OUTLINE_HIGH_COV_MAX_COHERENCE
-    low_outline_high_diff_cov = 0.85
-    low_outline_max_cov = 0.20
-    low_outline_min_coherence = 0.85
-    low_outline_max_iou = 0.74
     static_low_centrality_max = 0.35
     perceptual_low_score_max = 0.40
     perceptual_jnd_p95_max = 8.0
     perceptual_jnd_mean_max = 2.2
     tiny_color_low_score_max = 0.40
     tiny_color_max_delta = 2
-    low_outline_extreme_cov_min = 0.90
-    low_outline_extreme_outcov_max = 0.12
-    low_outline_extreme_iou_max = 0.62
-    low_outline_extreme_coherence_min = 0.82
     near_static_mid_outline_cov_min = 0.35
     near_static_mid_outline_cov_max = 0.55
     near_static_mid_outline_iou_min = 0.75
@@ -461,10 +458,15 @@ def check_button_color(
     overlay_iou_penalty_weight = DEFAULT_OVERLAY_IOU_PENALTY_WEIGHT
     overlay_iou_hard_veto = DEFAULT_OVERLAY_IOU_HARD_VETO
     overlay_hard_veto_max_centrality = DEFAULT_OVERLAY_HARD_VETO_MAX_CENTRALITY
+    overlay_bg_drift_min_score = DEFAULT_OVERLAY_BG_DRIFT_MIN_SCORE
+    overlay_bg_drift_min_coherence = DEFAULT_OVERLAY_BG_DRIFT_MIN_COHERENCE
+    overlay_bg_drift_min_centrality = DEFAULT_OVERLAY_BG_DRIFT_MIN_CENTRALITY
+    overlay_bg_drift_max_centrality = DEFAULT_OVERLAY_BG_DRIFT_MAX_CENTRALITY
+    overlay_bg_drift_max_coverage = DEFAULT_OVERLAY_BG_DRIFT_MAX_COVERAGE
+    overlay_bg_drift_min_iou = DEFAULT_OVERLAY_BG_DRIFT_MIN_IOU
+    overlay_bg_drift_max_iou = DEFAULT_OVERLAY_BG_DRIFT_MAX_IOU
     overlay_gate: Dict[str, float | bool] = {"applicable": False, "score": 0.0}
     overlay_iou_penalty = 0.0
-    low_outline_extreme_min_coverage_for_veto = DEFAULT_LOW_OUTLINE_EXTREME_MIN_COVERAGE_FOR_VETO
-    low_outline_extreme_min_ink_pixels = DEFAULT_LOW_OUTLINE_EXTREME_MIN_INK_PIXELS
     auto_color_mode = DEFAULT_AUTO_COLOR_MODE
     details_seg: Dict[str, Any] = {}
     luma_stats: Dict[str, float] = {"mean": 0.0, "p95": 0.0}
@@ -588,20 +590,12 @@ def check_button_color(
             outline_high_cov_max_coherence = float(
                 payload.get("outline_high_cov_max_coherence") or DEFAULT_OUTLINE_HIGH_COV_MAX_COHERENCE
             )
-            low_outline_high_diff_cov = float(payload.get("low_outline_high_diff_cov", 0.85))
-            low_outline_max_cov = float(payload.get("low_outline_max_cov", 0.20))
-            low_outline_min_coherence = float(payload.get("low_outline_min_coherence", 0.85))
-            low_outline_max_iou = float(payload.get("low_outline_max_iou", 0.74))
             static_low_centrality_max = float(payload.get("static_low_centrality_max", 0.35))
             perceptual_low_score_max = float(payload.get("perceptual_low_score_max", 0.40))
             perceptual_jnd_p95_max = float(payload.get("perceptual_jnd_p95_max", 8.0))
             perceptual_jnd_mean_max = float(payload.get("perceptual_jnd_mean_max", 2.2))
             tiny_color_low_score_max = float(payload.get("tiny_color_low_score_max", 0.40))
             tiny_color_max_delta = int(payload.get("tiny_color_max_delta", 2))
-            low_outline_extreme_cov_min = float(payload.get("low_outline_extreme_cov_min", 0.90))
-            low_outline_extreme_outcov_max = float(payload.get("low_outline_extreme_outcov_max", 0.12))
-            low_outline_extreme_iou_max = float(payload.get("low_outline_extreme_iou_max", 0.62))
-            low_outline_extreme_coherence_min = float(payload.get("low_outline_extreme_coherence_min", 0.82))
             near_static_mid_outline_cov_min = float(payload.get("near_static_mid_outline_cov_min", 0.35))
             near_static_mid_outline_cov_max = float(payload.get("near_static_mid_outline_cov_max", 0.55))
             near_static_mid_outline_iou_min = float(payload.get("near_static_mid_outline_iou_min", 0.75))
@@ -676,19 +670,48 @@ def check_button_color(
                     DEFAULT_OVERLAY_HARD_VETO_MAX_CENTRALITY,
                 )
             )
-            low_outline_extreme_min_coverage_for_veto = float(
+            overlay_bg_drift_min_score = float(
                 payload.get(
-                    "low_outline_extreme_min_coverage_for_veto",
-                    DEFAULT_LOW_OUTLINE_EXTREME_MIN_COVERAGE_FOR_VETO,
+                    "overlay_bg_drift_min_score",
+                    DEFAULT_OVERLAY_BG_DRIFT_MIN_SCORE,
                 )
             )
-            low_outline_extreme_min_ink_pixels = int(
+            overlay_bg_drift_min_coherence = float(
                 payload.get(
-                    "low_outline_extreme_min_ink_pixels",
-                    DEFAULT_LOW_OUTLINE_EXTREME_MIN_INK_PIXELS,
+                    "overlay_bg_drift_min_coherence",
+                    DEFAULT_OVERLAY_BG_DRIFT_MIN_COHERENCE,
                 )
             )
-
+            overlay_bg_drift_min_centrality = float(
+                payload.get(
+                    "overlay_bg_drift_min_centrality",
+                    DEFAULT_OVERLAY_BG_DRIFT_MIN_CENTRALITY,
+                )
+            )
+            overlay_bg_drift_max_centrality = float(
+                payload.get(
+                    "overlay_bg_drift_max_centrality",
+                    DEFAULT_OVERLAY_BG_DRIFT_MAX_CENTRALITY,
+                )
+            )
+            overlay_bg_drift_max_coverage = float(
+                payload.get(
+                    "overlay_bg_drift_max_coverage",
+                    DEFAULT_OVERLAY_BG_DRIFT_MAX_COVERAGE,
+                )
+            )
+            overlay_bg_drift_min_iou = float(
+                payload.get(
+                    "overlay_bg_drift_min_iou",
+                    DEFAULT_OVERLAY_BG_DRIFT_MIN_IOU,
+                )
+            )
+            overlay_bg_drift_max_iou = float(
+                payload.get(
+                    "overlay_bg_drift_max_iou",
+                    DEFAULT_OVERLAY_BG_DRIFT_MAX_IOU,
+                )
+            )
             metrics = diff_structure_score(
                 crop_before,
                 crop_after,
@@ -733,21 +756,11 @@ def check_button_color(
                 and metrics["centrality"] <= overlay_hard_veto_max_centrality
                 and not is_overlay_strong_activation
             )
-            has_low_outline_extreme_veto_evidence = (
-                outline["coverage"] >= low_outline_extreme_min_coverage_for_veto
-                and min(outline["count_a"], outline["count_b"]) >= low_outline_extreme_min_ink_pixels
-            )
             is_high_cov_static = (
                 outline["coverage"] >= outline_high_cov_min
                 and outline["iou"] >= outline_high_cov_iou_veto
                 and base_color_delta <= outline_high_cov_max_color_delta
                 and metrics["coherence"] <= outline_high_cov_max_coherence
-            )
-            is_low_outline_massive_drift = (
-                metrics["coverage"] >= low_outline_high_diff_cov
-                and outline["coverage"] <= low_outline_max_cov
-                and metrics["coherence"] >= low_outline_min_coherence
-                and outline["iou"] <= low_outline_max_iou
             )
             is_static_high_iou_low_centrality = (
                 outline["coverage"] >= 0.60
@@ -762,32 +775,33 @@ def check_button_color(
             is_tiny_color_low_score_noise = (
                 score <= tiny_color_low_score_max and base_color_delta <= tiny_color_max_delta
             )
-            is_low_outline_extreme_drift = (
-                metrics["coverage"] >= low_outline_extreme_cov_min
-                and outline["coverage"] <= low_outline_extreme_outcov_max
-                and outline["iou"] <= low_outline_extreme_iou_max
-                and metrics["coherence"] >= low_outline_extreme_coherence_min
-                and has_low_outline_extreme_veto_evidence
+            is_overlay_bg_drift_core = (
+                is_overlay_icon
+                and score >= overlay_bg_drift_min_score
+                and metrics["coherence"] >= overlay_bg_drift_min_coherence
+                and overlay_bg_drift_min_centrality <= metrics["centrality"] <= overlay_bg_drift_max_centrality
+                and outline["coverage"] <= overlay_bg_drift_max_coverage
+                and overlay_bg_drift_min_iou <= outline["iou"] <= overlay_bg_drift_max_iou
                 and not is_overlay_strong_activation
             )
-            is_near_static_mid_outline = (
+            is_overlay_bg_drift_mid_outline = (
                 metrics["coverage"] >= near_static_mid_coverage_min
                 and metrics["coherence"] >= near_static_mid_coherence_min
                 and near_static_mid_centrality_min <= metrics["centrality"] <= near_static_mid_centrality_max
                 and near_static_mid_outline_cov_min <= outline["coverage"] <= near_static_mid_outline_cov_max
                 and outline["iou"] >= near_static_mid_outline_iou_min
                 and base_color_delta <= near_static_mid_max_color_delta
+                and not is_overlay_strong_activation
             )
+            is_overlay_bg_drift = is_overlay_bg_drift_core or is_overlay_bg_drift_mid_outline
 
             outline_veto_active = (
                 overlay_iou_hard_veto_fired
                 or is_high_cov_static
-                or is_low_outline_massive_drift
                 or is_static_high_iou_low_centrality
                 or is_perceptual_low_score_noise
                 or is_tiny_color_low_score_noise
-                or is_low_outline_extreme_drift
-                or is_near_static_mid_outline
+                or is_overlay_bg_drift
             )
             if overlay_iou_penalty > 0:
                 veto_reasons.append("overlay_icon_iou_soft_penalty")
@@ -797,35 +811,16 @@ def check_button_color(
                 veto_reasons.append("overlay_icon_iou_waived_strong_activation")
             if is_high_cov_static:
                 veto_reasons.append("high_cov_static")
-            if is_low_outline_massive_drift:
-                veto_reasons.append("low_outline_massive_drift")
             if is_static_high_iou_low_centrality:
                 veto_reasons.append("static_high_iou_low_centrality")
             if is_perceptual_low_score_noise:
                 veto_reasons.append("perceptual_low_score_noise")
             if is_tiny_color_low_score_noise:
                 veto_reasons.append("tiny_color_low_score_noise")
-            if is_low_outline_extreme_drift:
-                veto_reasons.append("low_outline_extreme_drift")
-            if (
-                metrics["coverage"] >= low_outline_extreme_cov_min
-                and outline["coverage"] <= low_outline_extreme_outcov_max
-                and outline["iou"] <= low_outline_extreme_iou_max
-                and metrics["coherence"] >= low_outline_extreme_coherence_min
-                and not has_low_outline_extreme_veto_evidence
-            ):
-                veto_reasons.append("low_outline_extreme_drift_waived_no_outline_evidence")
-            if (
-                metrics["coverage"] >= low_outline_extreme_cov_min
-                and outline["coverage"] <= low_outline_extreme_outcov_max
-                and outline["iou"] <= low_outline_extreme_iou_max
-                and metrics["coherence"] >= low_outline_extreme_coherence_min
-                and has_low_outline_extreme_veto_evidence
-                and is_overlay_strong_activation
-            ):
-                veto_reasons.append("low_outline_extreme_drift_waived_strong_activation")
-            if is_near_static_mid_outline:
-                veto_reasons.append("near_static_mid_outline")
+            if is_overlay_bg_drift_core:
+                veto_reasons.append("overlay_bg_drift_veto_core")
+            if is_overlay_bg_drift_mid_outline:
+                veto_reasons.append("overlay_bg_drift_veto_mid_outline")
             passed = (effective_score > score_threshold) and not outline_veto_active
 
             basis = (
@@ -906,20 +901,12 @@ def check_button_color(
                 "outline_high_cov_max_coherence": outline_high_cov_max_coherence,
                 "luma_diff_mean": luma_stats["mean"],
                 "luma_diff_p95": luma_stats["p95"],
-                "low_outline_high_diff_cov": low_outline_high_diff_cov,
-                "low_outline_max_cov": low_outline_max_cov,
-                "low_outline_min_coherence": low_outline_min_coherence,
-                "low_outline_max_iou": low_outline_max_iou,
                 "static_low_centrality_max": static_low_centrality_max,
                 "perceptual_low_score_max": perceptual_low_score_max,
                 "perceptual_jnd_p95_max": perceptual_jnd_p95_max,
                 "perceptual_jnd_mean_max": perceptual_jnd_mean_max,
                 "tiny_color_low_score_max": tiny_color_low_score_max,
                 "tiny_color_max_delta": tiny_color_max_delta,
-                "low_outline_extreme_cov_min": low_outline_extreme_cov_min,
-                "low_outline_extreme_outcov_max": low_outline_extreme_outcov_max,
-                "low_outline_extreme_iou_max": low_outline_extreme_iou_max,
-                "low_outline_extreme_coherence_min": low_outline_extreme_coherence_min,
                 "near_static_mid_outline_cov_min": near_static_mid_outline_cov_min,
                 "near_static_mid_outline_cov_max": near_static_mid_outline_cov_max,
                 "near_static_mid_outline_iou_min": near_static_mid_outline_iou_min,
@@ -947,8 +934,13 @@ def check_button_color(
                 "overlay_iou_penalty": overlay_iou_penalty,
                 "overlay_iou_hard_veto": overlay_iou_hard_veto,
                 "overlay_hard_veto_max_centrality": overlay_hard_veto_max_centrality,
-                "low_outline_extreme_min_coverage_for_veto": low_outline_extreme_min_coverage_for_veto,
-                "low_outline_extreme_min_ink_pixels": low_outline_extreme_min_ink_pixels,
+                "overlay_bg_drift_min_score": overlay_bg_drift_min_score,
+                "overlay_bg_drift_min_coherence": overlay_bg_drift_min_coherence,
+                "overlay_bg_drift_min_centrality": overlay_bg_drift_min_centrality,
+                "overlay_bg_drift_max_centrality": overlay_bg_drift_max_centrality,
+                "overlay_bg_drift_max_coverage": overlay_bg_drift_max_coverage,
+                "overlay_bg_drift_min_iou": overlay_bg_drift_min_iou,
+                "overlay_bg_drift_max_iou": overlay_bg_drift_max_iou,
                 "veto_reasons": veto_reasons,
             }
         )
