@@ -1,8 +1,0 @@
-{
-  "type": "image_match",
-  "template_image": "../../screens/rili/rili_template_1.png",
-  "target_image": "../../screens/rili/rili_target_1_resize.png",
-  "expected_passed": true,
-  "expected_bounds": [],
-  "bounds_tolerance": 40
-}

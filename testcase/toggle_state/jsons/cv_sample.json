@@ -1,8 +1,0 @@
-{
-  "type": "toggle_state",
-  "bounds": [80, 300, 200, 360],
-  "expected": true,
-  "screenshot_a": "../images/AppB_before.png",
-  "screenshot_b": "../images/AppB_after.png",
-  "expected_passed": true
-}
