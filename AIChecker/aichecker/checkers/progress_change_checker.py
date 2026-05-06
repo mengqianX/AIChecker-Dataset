@@ -34,6 +34,13 @@ _CHANGE_RATIO_CORROBORATION_EDGE_FRAC    = 0.25   # edge_shift_px  >= 25 % of it
 # can jump by hundreds of pixels between two otherwise identical images.
 _MIN_EDGE_GRADIENT = 0.01
 
+# edge_shift_px is only meaningful when the column-mean profile has actually
+# changed between the two frames.  If profile_diff is near zero, the two
+# profiles are structurally identical and any argmax position difference is
+# purely noise-driven — regardless of how large it appears.
+# Gate: profile_diff must reach at least this fraction of its own threshold.
+_EDGE_SHIFT_MIN_PROFILE_FRAC = 0.30   # profile_diff >= 30 % of profile_diff_threshold
+
 
 def _resolve_expected_change(payload: Dict[str, Any]) -> bool:
     raw = payload.get("expected_change")
@@ -181,10 +188,21 @@ def check_progress_change(
         )
     )
 
+    # edge_shift_px is only trustworthy when the column-mean profile itself
+    # shows structural change.  When profile_diff is near zero the two images
+    # are structurally identical and argmax can jump arbitrarily between
+    # near-equal gradient peaks — even hundreds of pixels — without any real
+    # bar movement.  Gate it on a minimum profile_diff signal.
+    edge_shift_min_profile = profile_diff_threshold * _EDGE_SHIFT_MIN_PROFILE_FRAC
+    edge_shift_corroborated = (
+        edge_shift_px >= edge_shift_threshold_px
+        and profile_diff >= edge_shift_min_profile
+    )
+
     detected_changed = (
         change_ratio_corroborated
-        or profile_diff   >= profile_diff_threshold
-        or edge_shift_px  >= edge_shift_threshold_px
+        or profile_diff      >= profile_diff_threshold
+        or edge_shift_corroborated
     )
     passed = detected_changed if expected_change else (not detected_changed)
 
@@ -215,6 +233,7 @@ def check_progress_change(
         "edge_shift_threshold_px": edge_shift_threshold_px,
         "change_ratio": change_ratio,
         "change_ratio_robust": change_ratio_robust,
+        "edge_shift_corroborated": edge_shift_corroborated,
         "change_ratio_corroborated": change_ratio_corroborated,
         "profile_diff": profile_diff,
         "edge_shift_px": edge_shift_px,
