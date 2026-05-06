@@ -21,51 +21,21 @@ DEFAULT_EDGE_SHIFT_THRESHOLD_PX = 2.0
 # overall column profile and bar edge unchanged.
 _ROBUST_BLUR_RADIUS = 1.5
 
-# Minimum signal required in the supporting metrics for change_ratio to
-# count as a "real" change.  Expressed as a fraction of each metric's own
-# threshold.  Values below these fractions indicate pure image noise rather
-# than structural bar movement.
-# profile_diff must reach this fraction of its threshold before it can
-# corroborate a change_ratio signal.  Raising to 50 % ensures that faint,
-# diffuse perturbations (noise/JPEG artefacts) whose profile_diff is only
-# marginally above a loose threshold cannot falsely confirm change_ratio.
-_CHANGE_RATIO_CORROBORATION_PROFILE_FRAC = 0.50   # profile_diff >= 50 % of its threshold
-
 # Minimum gradient peak height (normalized 0-1) required for the argmax-based
-# edge position to be considered reliable.  When the column-mean profile is
-# nearly flat (no clear bar boundary), argmax returns a noise-driven index that
-# can jump by hundreds of pixels between two otherwise identical images.
+# edge position to be considered reliable.
 _MIN_EDGE_GRADIENT = 0.01
 
-# edge_shift_px is only meaningful when the column-mean profile has actually
-# changed between the two frames.  If profile_diff is near zero, the two
-# profiles are structurally identical and any argmax position difference is
-# purely noise-driven — regardless of how large it appears.
-# Gate: profile_diff must reach at least this fraction of its own threshold.
-# Using 50 % to match the change_ratio corroboration level — both metrics
-# require meaningful profile structure before they are considered reliable.
-_EDGE_SHIFT_MIN_PROFILE_FRAC = 0.50   # profile_diff >= 50 % of profile_diff_threshold
+# Minimum maximum-column-diff to count as "structural evidence".
+# Real visible changes (bar fill, text timestamp, edge movement) produce at
+# least one column whose row-averaged diff is clearly above noise level.
+# After Gaussian blur the column average for noise rarely exceeds ~0.03;
+# a threshold of 0.08 (≈ 20/255) reliably separates structural signal from
+# noise/compression artifacts across a wide range of bar heights and styles.
+_MAX_COL_DIFF_STRUCTURAL = 0.08
 
-# Real bar advancement concentrates column-diff changes near the moving edge;
-# image-quality perturbations (noise, JPEG, mild resize) spread changes
-# uniformly across all columns.  Require the peak column diff to be at least
-# this many times the mean column diff before treating a near-threshold profile
-# signal as "structural" (i.e. from a real bar movement rather than diffuse noise).
-# NOTE: this check is bypassed when signals are clearly well above threshold
-# (see _CLEARLY_CHANGED_* below), because large bar advances fill many columns
-# and produce inherently diffuse — but genuine — changes.
-_PROFILE_PEAK_MIN_RATIO = 4.0
-
-# When change_ratio_robust or profile_diff exceed their threshold by this
-# factor the change is considered "clearly large" and the concentration check
-# is skipped entirely.  Noise/perturbation cases never reach these levels.
-_CLEARLY_CHANGED_RATIO_FACTOR  = 5    # change_ratio_robust >= 5 × threshold
-_CLEARLY_CHANGED_PROFILE_FACTOR = 3   # profile_diff         >= 3 × threshold
-
-# When BOTH metrics exceed their thresholds by this smaller factor simultaneously,
-# they mutually corroborate each other — noise can elevate change_ratio in
-# isolation but cannot simultaneously elevate profile_diff proportionally.
-_DUAL_ELEVATED_FACTOR = 2   # both change_ratio_robust >= 2× AND profile_diff >= 2×
+# Single-metric "clearly large" bypass thresholds (skip all other checks).
+_CLEARLY_CHANGED_RATIO_FACTOR  = 5   # change_ratio_robust >= 5 × threshold
+_CLEARLY_CHANGED_PROFILE_FACTOR = 3  # profile_diff         >= 3 × threshold
 
 
 def _resolve_expected_change(payload: Dict[str, Any]) -> bool:
@@ -199,58 +169,51 @@ def check_progress_change(
     col_diffs = np.abs(after_gray.mean(axis=0) - before_gray.mean(axis=0))
     profile_diff = float(col_diffs.mean())
     max_col_diff = float(col_diffs.max()) if col_diffs.size > 0 else 0.0
-
-    # Concentration ratio: real bar movement concentrates diffs near the
-    # advancing edge (high ratio); noise/compression spreads diffs uniformly
-    # across all columns (ratio ≈ 1–2).
-    profile_peak_ratio = max_col_diff / (profile_diff + 1e-8)
-    profile_is_concentrated = profile_peak_ratio >= _PROFILE_PEAK_MIN_RATIO
+    profile_peak_ratio = max_col_diff / (profile_diff + 1e-8)  # kept for diagnostics
 
     edge_shift_px = _estimate_progress_edge_shift_px(before_gray, after_gray)
 
-    # ── Detection logic ────────────────────────────────────────────────────
-    corroboration_min_profile = profile_diff_threshold * _CHANGE_RATIO_CORROBORATION_PROFILE_FRAC
-
-    # "Clearly changed" bypasses the concentration check — either a single
-    # metric is unambiguously large, or BOTH metrics are concurrently elevated
-    # (mutual corroboration: noise raises change_ratio in isolation but cannot
-    # simultaneously raise profile_diff proportionally).
+    # ── Detection logic (4 independent paths) ─────────────────────────────
+    #
+    # PATH 1 — clearly large single metric (unambiguous, no further checks)
     clearly_changed = (
-        change_ratio_robust >= change_ratio_threshold  * _CLEARLY_CHANGED_RATIO_FACTOR
-        or profile_diff     >= profile_diff_threshold  * _CLEARLY_CHANGED_PROFILE_FACTOR
-        or (
-            change_ratio_robust >= change_ratio_threshold * _DUAL_ELEVATED_FACTOR
-            and profile_diff    >= profile_diff_threshold * _DUAL_ELEVATED_FACTOR
-        )
+        change_ratio_robust >= change_ratio_threshold * _CLEARLY_CHANGED_RATIO_FACTOR
+        or profile_diff     >= profile_diff_threshold * _CLEARLY_CHANGED_PROFILE_FACTOR
     )
 
-    # Near-threshold region: require (a) concentration evidence AND (b) a
-    # minimum profile_diff signal.  edge_shift is intentionally excluded here
-    # because its reliability itself depends on profile structure — it cannot
-    # independently vouch for change_ratio.
-    change_ratio_corroborated = (
+    # PATH 2 — both metrics simultaneously above their thresholds.
+    # Noise raises change_ratio in isolation (pixel diffs scatter across
+    # the image) but cannot simultaneously raise profile_diff above its
+    # threshold (column averages cancel for random noise).
+    both_above_threshold = (
         change_ratio_robust >= change_ratio_threshold
-        and profile_is_concentrated
-        and profile_diff >= corroboration_min_profile
+        and profile_diff    >= profile_diff_threshold
     )
 
-    profile_diff_structural = (
-        profile_diff >= profile_diff_threshold
-        and profile_is_concentrated
+    # PATH 3 — change_ratio + structural column evidence.
+    # When profile_diff is below its threshold, rely on max_col_diff: a
+    # real visible change (bar edge, text character, colour shift) creates
+    # at least one column whose row-averaged diff is clearly above noise
+    # level (≥ _MAX_COL_DIFF_STRUCTURAL).  After Gaussian blur, random
+    # noise/compression artifacts rarely achieve this level.
+    change_ratio_with_structure = (
+        change_ratio_robust >= change_ratio_threshold
+        and max_col_diff    >= _MAX_COL_DIFF_STRUCTURAL
     )
 
-    edge_shift_min_profile = profile_diff_threshold * _EDGE_SHIFT_MIN_PROFILE_FRAC
-    edge_shift_corroborated = (
+    # PATH 4 — edge shift + structural column evidence.
+    # edge_shift_px is only meaningful when the column profile shows real
+    # structural change; max_col_diff acts as that gate.
+    edge_shift_triggered = (
         edge_shift_px >= edge_shift_threshold_px
-        and profile_diff >= edge_shift_min_profile
-        and profile_is_concentrated
+        and max_col_diff >= _MAX_COL_DIFF_STRUCTURAL
     )
 
     detected_changed = (
         clearly_changed
-        or change_ratio_corroborated
-        or profile_diff_structural
-        or edge_shift_corroborated
+        or both_above_threshold
+        or change_ratio_with_structure
+        or edge_shift_triggered
     )
     passed = detected_changed if expected_change else (not detected_changed)
 
@@ -281,14 +244,14 @@ def check_progress_change(
         "edge_shift_threshold_px": edge_shift_threshold_px,
         "change_ratio": change_ratio,
         "change_ratio_robust": change_ratio_robust,
-        "profile_peak_ratio": profile_peak_ratio,
-        "profile_is_concentrated": profile_is_concentrated,
-        "clearly_changed": clearly_changed,
-        "change_ratio_corroborated": change_ratio_corroborated,
-        "profile_diff_structural": profile_diff_structural,
-        "edge_shift_corroborated": edge_shift_corroborated,
         "profile_diff": profile_diff,
+        "max_col_diff": max_col_diff,
+        "profile_peak_ratio": profile_peak_ratio,
         "edge_shift_px": edge_shift_px,
+        "clearly_changed": clearly_changed,
+        "both_above_threshold": both_above_threshold,
+        "change_ratio_with_structure": change_ratio_with_structure,
+        "edge_shift_triggered": edge_shift_triggered,
         "mean_abs_pixel_diff": mean_abs_pixel_diff,
         "crop_size": crop_after.size,
     }
