@@ -37,6 +37,14 @@ _MAX_COL_DIFF_STRUCTURAL = 0.08
 _CLEARLY_CHANGED_RATIO_FACTOR  = 5   # change_ratio_robust >= 5 × threshold
 _CLEARLY_CHANGED_PROFILE_FACTOR = 3  # profile_diff         >= 3 × threshold
 
+# Ratio-dominant fallback for subtle-but-real progress updates:
+# some real cases have strong per-pixel movement but muted column-profile mean
+# (e.g. thin/soft edges, anti-aliased progress fronts). Require both:
+#   1) clearly elevated change_ratio_robust
+#   2) non-trivial profile_diff support (not pure random noise)
+_RATIO_DOMINANT_FACTOR = 2.5
+_PROFILE_SUPPORT_FACTOR = 0.70
+
 
 def _resolve_expected_change(payload: Dict[str, Any]) -> bool:
     raw = payload.get("expected_change")
@@ -90,6 +98,63 @@ def _estimate_progress_edge_shift_px(before_gray: np.ndarray, after_gray: np.nda
     edge_before = int(np.argmax(grad_before))
     edge_after = int(np.argmax(grad_after))
     return float(abs(edge_after - edge_before))
+
+
+def _detect_progress_changed(
+    *,
+    change_ratio_robust: float,
+    profile_diff: float,
+    max_col_diff: float,
+    edge_shift_px: float,
+    change_ratio_threshold: float,
+    profile_diff_threshold: float,
+    edge_shift_threshold_px: float,
+) -> Dict[str, bool]:
+    # PATH 1 — clearly large single metric (unambiguous, no further checks)
+    clearly_changed = (
+        change_ratio_robust >= change_ratio_threshold * _CLEARLY_CHANGED_RATIO_FACTOR
+        or profile_diff >= profile_diff_threshold * _CLEARLY_CHANGED_PROFILE_FACTOR
+    )
+
+    # PATH 2 — both metrics simultaneously above their thresholds.
+    both_above_threshold = (
+        change_ratio_robust >= change_ratio_threshold
+        and profile_diff >= profile_diff_threshold
+    )
+
+    # PATH 3 — change_ratio + structural column evidence.
+    change_ratio_with_structure = (
+        change_ratio_robust >= change_ratio_threshold
+        and max_col_diff >= _MAX_COL_DIFF_STRUCTURAL
+    )
+
+    # PATH 4 — ratio-dominant + profile support.
+    ratio_dominant_with_profile_support = (
+        change_ratio_robust >= change_ratio_threshold * _RATIO_DOMINANT_FACTOR
+        and profile_diff >= profile_diff_threshold * _PROFILE_SUPPORT_FACTOR
+    )
+
+    # PATH 5 — edge shift + structural column evidence.
+    edge_shift_triggered = (
+        edge_shift_px >= edge_shift_threshold_px
+        and max_col_diff >= _MAX_COL_DIFF_STRUCTURAL
+    )
+
+    detected_changed = (
+        clearly_changed
+        or both_above_threshold
+        or change_ratio_with_structure
+        or ratio_dominant_with_profile_support
+        or edge_shift_triggered
+    )
+    return {
+        "detected_changed": detected_changed,
+        "clearly_changed": clearly_changed,
+        "both_above_threshold": both_above_threshold,
+        "change_ratio_with_structure": change_ratio_with_structure,
+        "ratio_dominant_with_profile_support": ratio_dominant_with_profile_support,
+        "edge_shift_triggered": edge_shift_triggered,
+    }
 
 
 def check_progress_change(
@@ -173,48 +238,19 @@ def check_progress_change(
 
     edge_shift_px = _estimate_progress_edge_shift_px(before_gray, after_gray)
 
-    # ── Detection logic (4 independent paths) ─────────────────────────────
-    #
-    # PATH 1 — clearly large single metric (unambiguous, no further checks)
-    clearly_changed = (
-        change_ratio_robust >= change_ratio_threshold * _CLEARLY_CHANGED_RATIO_FACTOR
-        or profile_diff     >= profile_diff_threshold * _CLEARLY_CHANGED_PROFILE_FACTOR
+    # ── Detection logic (multi-path) ───────────────────────────────────────
+    # Noise can raise individual metrics, so we combine independent paths
+    # with structure/profile guards.
+    detect_flags = _detect_progress_changed(
+        change_ratio_robust=change_ratio_robust,
+        profile_diff=profile_diff,
+        max_col_diff=max_col_diff,
+        edge_shift_px=edge_shift_px,
+        change_ratio_threshold=change_ratio_threshold,
+        profile_diff_threshold=profile_diff_threshold,
+        edge_shift_threshold_px=edge_shift_threshold_px,
     )
-
-    # PATH 2 — both metrics simultaneously above their thresholds.
-    # Noise raises change_ratio in isolation (pixel diffs scatter across
-    # the image) but cannot simultaneously raise profile_diff above its
-    # threshold (column averages cancel for random noise).
-    both_above_threshold = (
-        change_ratio_robust >= change_ratio_threshold
-        and profile_diff    >= profile_diff_threshold
-    )
-
-    # PATH 3 — change_ratio + structural column evidence.
-    # When profile_diff is below its threshold, rely on max_col_diff: a
-    # real visible change (bar edge, text character, colour shift) creates
-    # at least one column whose row-averaged diff is clearly above noise
-    # level (≥ _MAX_COL_DIFF_STRUCTURAL).  After Gaussian blur, random
-    # noise/compression artifacts rarely achieve this level.
-    change_ratio_with_structure = (
-        change_ratio_robust >= change_ratio_threshold
-        and max_col_diff    >= _MAX_COL_DIFF_STRUCTURAL
-    )
-
-    # PATH 4 — edge shift + structural column evidence.
-    # edge_shift_px is only meaningful when the column profile shows real
-    # structural change; max_col_diff acts as that gate.
-    edge_shift_triggered = (
-        edge_shift_px >= edge_shift_threshold_px
-        and max_col_diff >= _MAX_COL_DIFF_STRUCTURAL
-    )
-
-    detected_changed = (
-        clearly_changed
-        or both_above_threshold
-        or change_ratio_with_structure
-        or edge_shift_triggered
-    )
+    detected_changed = bool(detect_flags["detected_changed"])
     passed = detected_changed if expected_change else (not detected_changed)
 
     basis = (
@@ -248,10 +284,13 @@ def check_progress_change(
         "max_col_diff": max_col_diff,
         "profile_peak_ratio": profile_peak_ratio,
         "edge_shift_px": edge_shift_px,
-        "clearly_changed": clearly_changed,
-        "both_above_threshold": both_above_threshold,
-        "change_ratio_with_structure": change_ratio_with_structure,
-        "edge_shift_triggered": edge_shift_triggered,
+        "clearly_changed": bool(detect_flags["clearly_changed"]),
+        "both_above_threshold": bool(detect_flags["both_above_threshold"]),
+        "change_ratio_with_structure": bool(detect_flags["change_ratio_with_structure"]),
+        "ratio_dominant_with_profile_support": bool(
+            detect_flags["ratio_dominant_with_profile_support"]
+        ),
+        "edge_shift_triggered": bool(detect_flags["edge_shift_triggered"]),
         "mean_abs_pixel_diff": mean_abs_pixel_diff,
         "crop_size": crop_after.size,
     }
