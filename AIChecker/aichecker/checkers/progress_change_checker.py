@@ -25,8 +25,11 @@ _ROBUST_BLUR_RADIUS = 1.5
 # count as a "real" change.  Expressed as a fraction of each metric's own
 # threshold.  Values below these fractions indicate pure image noise rather
 # than structural bar movement.
-_CHANGE_RATIO_CORROBORATION_PROFILE_FRAC = 0.30   # profile_diff >= 30 % of its threshold
-_CHANGE_RATIO_CORROBORATION_EDGE_FRAC    = 0.25   # edge_shift_px  >= 25 % of its threshold
+# profile_diff must reach this fraction of its threshold before it can
+# corroborate a change_ratio signal.  Raising to 50 % ensures that faint,
+# diffuse perturbations (noise/JPEG artefacts) whose profile_diff is only
+# marginally above a loose threshold cannot falsely confirm change_ratio.
+_CHANGE_RATIO_CORROBORATION_PROFILE_FRAC = 0.50   # profile_diff >= 50 % of its threshold
 
 # Minimum gradient peak height (normalized 0-1) required for the argmax-based
 # edge position to be considered reliable.  When the column-mean profile is
@@ -39,7 +42,9 @@ _MIN_EDGE_GRADIENT = 0.01
 # profiles are structurally identical and any argmax position difference is
 # purely noise-driven — regardless of how large it appears.
 # Gate: profile_diff must reach at least this fraction of its own threshold.
-_EDGE_SHIFT_MIN_PROFILE_FRAC = 0.30   # profile_diff >= 30 % of profile_diff_threshold
+# Using 50 % to match the change_ratio corroboration level — both metrics
+# require meaningful profile structure before they are considered reliable.
+_EDGE_SHIFT_MIN_PROFILE_FRAC = 0.50   # profile_diff >= 50 % of profile_diff_threshold
 
 # Real bar advancement concentrates column-diff changes near the moving edge;
 # image-quality perturbations (noise, JPEG, mild resize) spread changes
@@ -200,7 +205,6 @@ def check_progress_change(
 
     # ── Detection logic ────────────────────────────────────────────────────
     corroboration_min_profile = profile_diff_threshold * _CHANGE_RATIO_CORROBORATION_PROFILE_FRAC
-    corroboration_min_edge    = edge_shift_threshold_px * _CHANGE_RATIO_CORROBORATION_EDGE_FRAC
 
     # "Clearly large" signals are unambiguous regardless of concentration.
     # Large bar advances fill many columns, producing diffuse but genuine changes
@@ -210,15 +214,14 @@ def check_progress_change(
         or profile_diff     >= profile_diff_threshold  * _CLEARLY_CHANGED_PROFILE_FACTOR
     )
 
-    # Near-threshold region: require concentration to distinguish real change
-    # from diffuse image-quality perturbations (noise, JPEG, mild resize/blur).
+    # Near-threshold region: require (a) concentration evidence AND (b) a
+    # minimum profile_diff signal.  edge_shift is intentionally excluded here
+    # because its reliability itself depends on profile structure — it cannot
+    # independently vouch for change_ratio.
     change_ratio_corroborated = (
         change_ratio_robust >= change_ratio_threshold
         and profile_is_concentrated
-        and (
-            profile_diff  >= corroboration_min_profile
-            or edge_shift_px >= corroboration_min_edge
-        )
+        and profile_diff >= corroboration_min_profile
     )
 
     profile_diff_structural = (
