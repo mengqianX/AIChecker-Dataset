@@ -62,6 +62,11 @@ _PROFILE_PEAK_MIN_RATIO = 4.0
 _CLEARLY_CHANGED_RATIO_FACTOR  = 5    # change_ratio_robust >= 5 × threshold
 _CLEARLY_CHANGED_PROFILE_FACTOR = 3   # profile_diff         >= 3 × threshold
 
+# When BOTH metrics exceed their thresholds by this smaller factor simultaneously,
+# they mutually corroborate each other — noise can elevate change_ratio in
+# isolation but cannot simultaneously elevate profile_diff proportionally.
+_DUAL_ELEVATED_FACTOR = 2   # both change_ratio_robust >= 2× AND profile_diff >= 2×
+
 
 def _resolve_expected_change(payload: Dict[str, Any]) -> bool:
     raw = payload.get("expected_change")
@@ -206,12 +211,17 @@ def check_progress_change(
     # ── Detection logic ────────────────────────────────────────────────────
     corroboration_min_profile = profile_diff_threshold * _CHANGE_RATIO_CORROBORATION_PROFILE_FRAC
 
-    # "Clearly large" signals are unambiguous regardless of concentration.
-    # Large bar advances fill many columns, producing diffuse but genuine changes
-    # that would incorrectly fail a concentration test.
+    # "Clearly changed" bypasses the concentration check — either a single
+    # metric is unambiguously large, or BOTH metrics are concurrently elevated
+    # (mutual corroboration: noise raises change_ratio in isolation but cannot
+    # simultaneously raise profile_diff proportionally).
     clearly_changed = (
         change_ratio_robust >= change_ratio_threshold  * _CLEARLY_CHANGED_RATIO_FACTOR
         or profile_diff     >= profile_diff_threshold  * _CLEARLY_CHANGED_PROFILE_FACTOR
+        or (
+            change_ratio_robust >= change_ratio_threshold * _DUAL_ELEVATED_FACTOR
+            and profile_diff    >= profile_diff_threshold * _DUAL_ELEVATED_FACTOR
+        )
     )
 
     # Near-threshold region: require (a) concentration evidence AND (b) a
