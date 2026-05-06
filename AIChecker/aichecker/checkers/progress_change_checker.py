@@ -28,6 +28,12 @@ _ROBUST_BLUR_RADIUS = 1.5
 _CHANGE_RATIO_CORROBORATION_PROFILE_FRAC = 0.20   # profile_diff >= 20 % of its threshold
 _CHANGE_RATIO_CORROBORATION_EDGE_FRAC    = 0.25   # edge_shift_px  >= 25 % of its threshold
 
+# Minimum gradient peak height (normalized 0-1) required for the argmax-based
+# edge position to be considered reliable.  When the column-mean profile is
+# nearly flat (no clear bar boundary), argmax returns a noise-driven index that
+# can jump by hundreds of pixels between two otherwise identical images.
+_MIN_EDGE_GRADIENT = 0.01
+
 
 def _resolve_expected_change(payload: Dict[str, Any]) -> bool:
     raw = payload.get("expected_change")
@@ -69,6 +75,13 @@ def _estimate_progress_edge_shift_px(before_gray: np.ndarray, after_gray: np.nda
     grad_before = np.abs(np.diff(profile_before))
     grad_after = np.abs(np.diff(profile_after))
     if grad_before.size == 0 or grad_after.size == 0:
+        return 0.0
+
+    # Guard: when the profile is nearly flat (no clear bar boundary), the
+    # argmax position is unreliable — a tiny noise difference between two
+    # otherwise identical frames can flip it by hundreds of pixels.  Only
+    # report edge shift when both profiles have a sufficiently prominent peak.
+    if grad_before.max() < _MIN_EDGE_GRADIENT or grad_after.max() < _MIN_EDGE_GRADIENT:
         return 0.0
 
     edge_before = int(np.argmax(grad_before))
