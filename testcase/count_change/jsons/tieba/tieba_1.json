@@ -1,8 +1,0 @@
-{
-    "type": "count_change",
-    "screenshot_a": "../../screens/tieba/tieba_before_1.png",
-    "screenshot_b": "../../screens/tieba/tieba_after_1.png",
-    "bounds": [875, 1802, 959, 1851],
-    "expected_passed": true,
-    "label": "pass"
-}

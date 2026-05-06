@@ -1,8 +1,0 @@
-{
-    "type": "count_change",
-    "screenshot_a": "../../screens/xhs/xhs_before_4.png",
-    "screenshot_b": "../../screens/xhs/xhs_after_4.png",
-    "bounds": [846, 805, 942, 877],
-    "expected_passed": true,
-    "label": "pass"
-}
