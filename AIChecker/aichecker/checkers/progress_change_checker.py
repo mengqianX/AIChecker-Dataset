@@ -45,6 +45,18 @@ _CLEARLY_CHANGED_PROFILE_FACTOR = 3  # profile_diff         >= 3 × threshold
 _RATIO_DOMINANT_FACTOR = 2.5
 _PROFILE_SUPPORT_FACTOR = 0.70
 
+# High-ratio fallback for weak-profile cases:
+# when change_ratio is very high, require only light structural support.
+_HIGH_RATIO_FACTOR = 1.9
+_WEAK_PROFILE_SUPPORT_FACTOR = 0.33
+_WEAK_MAX_COL_DIFF_SUPPORT = 0.045
+
+# Extreme edge-shift fallback:
+# for very large shifts, relax max_col_diff gate but still require non-trivial
+# profile support so random argmax jitter is not enough.
+_EXTREME_EDGE_SHIFT_FACTOR = 8.0
+_EDGE_SHIFT_PROFILE_SUPPORT_FACTOR = 0.25
+
 
 def _resolve_expected_change(payload: Dict[str, Any]) -> bool:
     raw = payload.get("expected_change")
@@ -134,10 +146,27 @@ def _detect_progress_changed(
         and profile_diff >= profile_diff_threshold * _PROFILE_SUPPORT_FACTOR
     )
 
-    # PATH 5 — edge shift + structural column evidence.
+    # PATH 5 — high-ratio + weak structural support.
+    # Covers cases where change spreads over a broader/softer region and keeps
+    # profile mean below strict support threshold, while still showing signal.
+    high_ratio_with_weak_support = (
+        change_ratio_robust >= change_ratio_threshold * _HIGH_RATIO_FACTOR
+        and profile_diff >= profile_diff_threshold * _WEAK_PROFILE_SUPPORT_FACTOR
+        and max_col_diff >= _WEAK_MAX_COL_DIFF_SUPPORT
+    )
+
+    # PATH 6 — edge shift + structural column evidence.
     edge_shift_triggered = (
         edge_shift_px >= edge_shift_threshold_px
         and max_col_diff >= _MAX_COL_DIFF_STRUCTURAL
+    )
+
+    # PATH 7 — extreme edge shift + profile support.
+    # If edge motion is far beyond threshold, keep a lighter profile gate to
+    # avoid missing true long-distance bar movement.
+    extreme_edge_shift_with_profile_support = (
+        edge_shift_px >= edge_shift_threshold_px * _EXTREME_EDGE_SHIFT_FACTOR
+        and profile_diff >= profile_diff_threshold * _EDGE_SHIFT_PROFILE_SUPPORT_FACTOR
     )
 
     detected_changed = (
@@ -145,7 +174,9 @@ def _detect_progress_changed(
         or both_above_threshold
         or change_ratio_with_structure
         or ratio_dominant_with_profile_support
+        or high_ratio_with_weak_support
         or edge_shift_triggered
+        or extreme_edge_shift_with_profile_support
     )
     return {
         "detected_changed": detected_changed,
@@ -153,7 +184,9 @@ def _detect_progress_changed(
         "both_above_threshold": both_above_threshold,
         "change_ratio_with_structure": change_ratio_with_structure,
         "ratio_dominant_with_profile_support": ratio_dominant_with_profile_support,
+        "high_ratio_with_weak_support": high_ratio_with_weak_support,
         "edge_shift_triggered": edge_shift_triggered,
+        "extreme_edge_shift_with_profile_support": extreme_edge_shift_with_profile_support,
     }
 
 
@@ -290,7 +323,11 @@ def check_progress_change(
         "ratio_dominant_with_profile_support": bool(
             detect_flags["ratio_dominant_with_profile_support"]
         ),
+        "high_ratio_with_weak_support": bool(detect_flags["high_ratio_with_weak_support"]),
         "edge_shift_triggered": bool(detect_flags["edge_shift_triggered"]),
+        "extreme_edge_shift_with_profile_support": bool(
+            detect_flags["extreme_edge_shift_with_profile_support"]
+        ),
         "mean_abs_pixel_diff": mean_abs_pixel_diff,
         "crop_size": crop_after.size,
     }
