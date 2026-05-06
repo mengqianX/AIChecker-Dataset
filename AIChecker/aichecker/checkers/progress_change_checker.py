@@ -25,7 +25,7 @@ _ROBUST_BLUR_RADIUS = 1.5
 # count as a "real" change.  Expressed as a fraction of each metric's own
 # threshold.  Values below these fractions indicate pure image noise rather
 # than structural bar movement.
-_CHANGE_RATIO_CORROBORATION_PROFILE_FRAC = 0.20   # profile_diff >= 20 % of its threshold
+_CHANGE_RATIO_CORROBORATION_PROFILE_FRAC = 0.30   # profile_diff >= 30 % of its threshold
 _CHANGE_RATIO_CORROBORATION_EDGE_FRAC    = 0.25   # edge_shift_px  >= 25 % of its threshold
 
 # Minimum gradient peak height (normalized 0-1) required for the argmax-based
@@ -40,6 +40,22 @@ _MIN_EDGE_GRADIENT = 0.01
 # purely noise-driven — regardless of how large it appears.
 # Gate: profile_diff must reach at least this fraction of its own threshold.
 _EDGE_SHIFT_MIN_PROFILE_FRAC = 0.30   # profile_diff >= 30 % of profile_diff_threshold
+
+# Real bar advancement concentrates column-diff changes near the moving edge;
+# image-quality perturbations (noise, JPEG, mild resize) spread changes
+# uniformly across all columns.  Require the peak column diff to be at least
+# this many times the mean column diff before treating a near-threshold profile
+# signal as "structural" (i.e. from a real bar movement rather than diffuse noise).
+# NOTE: this check is bypassed when signals are clearly well above threshold
+# (see _CLEARLY_CHANGED_* below), because large bar advances fill many columns
+# and produce inherently diffuse — but genuine — changes.
+_PROFILE_PEAK_MIN_RATIO = 4.0
+
+# When change_ratio_robust or profile_diff exceed their threshold by this
+# factor the change is considered "clearly large" and the concentration check
+# is skipped entirely.  Noise/perturbation cases never reach these levels.
+_CLEARLY_CHANGED_RATIO_FACTOR  = 5    # change_ratio_robust >= 5 × threshold
+_CLEARLY_CHANGED_PROFILE_FACTOR = 3   # profile_diff         >= 3 × threshold
 
 
 def _resolve_expected_change(payload: Dict[str, Any]) -> bool:
@@ -169,39 +185,58 @@ def check_progress_change(
     # ── Structural / profile metrics ───────────────────────────────────────
     before_gray = np.array(crop_before.convert("L"), dtype=np.float32) / 255.0
     after_gray = np.array(crop_after.convert("L"), dtype=np.float32) / 255.0
-    profile_diff = float(np.mean(np.abs(after_gray.mean(axis=0) - before_gray.mean(axis=0))))
+
+    col_diffs = np.abs(after_gray.mean(axis=0) - before_gray.mean(axis=0))
+    profile_diff = float(col_diffs.mean())
+    max_col_diff = float(col_diffs.max()) if col_diffs.size > 0 else 0.0
+
+    # Concentration ratio: real bar movement concentrates diffs near the
+    # advancing edge (high ratio); noise/compression spreads diffs uniformly
+    # across all columns (ratio ≈ 1–2).
+    profile_peak_ratio = max_col_diff / (profile_diff + 1e-8)
+    profile_is_concentrated = profile_peak_ratio >= _PROFILE_PEAK_MIN_RATIO
+
     edge_shift_px = _estimate_progress_edge_shift_px(before_gray, after_gray)
 
     # ── Detection logic ────────────────────────────────────────────────────
-    # change_ratio_robust requires corroboration from at least one structural
-    # metric to count as "changed".  This prevents image-quality perturbations
-    # that raise change_ratio_robust above threshold (e.g. heavy JPEG artefacts
-    # or slight blur from cropping) from causing false positives when both
-    # profile_diff and edge_shift_px remain near zero.
     corroboration_min_profile = profile_diff_threshold * _CHANGE_RATIO_CORROBORATION_PROFILE_FRAC
     corroboration_min_edge    = edge_shift_threshold_px * _CHANGE_RATIO_CORROBORATION_EDGE_FRAC
+
+    # "Clearly large" signals are unambiguous regardless of concentration.
+    # Large bar advances fill many columns, producing diffuse but genuine changes
+    # that would incorrectly fail a concentration test.
+    clearly_changed = (
+        change_ratio_robust >= change_ratio_threshold  * _CLEARLY_CHANGED_RATIO_FACTOR
+        or profile_diff     >= profile_diff_threshold  * _CLEARLY_CHANGED_PROFILE_FACTOR
+    )
+
+    # Near-threshold region: require concentration to distinguish real change
+    # from diffuse image-quality perturbations (noise, JPEG, mild resize/blur).
     change_ratio_corroborated = (
         change_ratio_robust >= change_ratio_threshold
+        and profile_is_concentrated
         and (
             profile_diff  >= corroboration_min_profile
             or edge_shift_px >= corroboration_min_edge
         )
     )
 
-    # edge_shift_px is only trustworthy when the column-mean profile itself
-    # shows structural change.  When profile_diff is near zero the two images
-    # are structurally identical and argmax can jump arbitrarily between
-    # near-equal gradient peaks — even hundreds of pixels — without any real
-    # bar movement.  Gate it on a minimum profile_diff signal.
+    profile_diff_structural = (
+        profile_diff >= profile_diff_threshold
+        and profile_is_concentrated
+    )
+
     edge_shift_min_profile = profile_diff_threshold * _EDGE_SHIFT_MIN_PROFILE_FRAC
     edge_shift_corroborated = (
         edge_shift_px >= edge_shift_threshold_px
         and profile_diff >= edge_shift_min_profile
+        and profile_is_concentrated
     )
 
     detected_changed = (
-        change_ratio_corroborated
-        or profile_diff      >= profile_diff_threshold
+        clearly_changed
+        or change_ratio_corroborated
+        or profile_diff_structural
         or edge_shift_corroborated
     )
     passed = detected_changed if expected_change else (not detected_changed)
@@ -233,8 +268,12 @@ def check_progress_change(
         "edge_shift_threshold_px": edge_shift_threshold_px,
         "change_ratio": change_ratio,
         "change_ratio_robust": change_ratio_robust,
-        "edge_shift_corroborated": edge_shift_corroborated,
+        "profile_peak_ratio": profile_peak_ratio,
+        "profile_is_concentrated": profile_is_concentrated,
+        "clearly_changed": clearly_changed,
         "change_ratio_corroborated": change_ratio_corroborated,
+        "profile_diff_structural": profile_diff_structural,
+        "edge_shift_corroborated": edge_shift_corroborated,
         "profile_diff": profile_diff,
         "edge_shift_px": edge_shift_px,
         "mean_abs_pixel_diff": mean_abs_pixel_diff,
