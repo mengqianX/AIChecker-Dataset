@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+from PIL import ImageFilter
 
 from ..models import Bounds, CheckResult, ControlInfo
 from ..utils import button_base_color, load_image
@@ -13,6 +14,19 @@ DEFAULT_PIXEL_THRESHOLD = 8
 DEFAULT_CHANGE_RATIO_THRESHOLD = 0.02
 DEFAULT_PROFILE_DIFF_THRESHOLD = 0.015
 DEFAULT_EDGE_SHIFT_THRESHOLD_PX = 2.0
+
+# Gaussian blur radius applied before computing change_ratio to suppress
+# image-quality perturbations (invisible noise, JPEG artifacts, mild
+# resize/crop blur) that scatter across individual pixels but leave the
+# overall column profile and bar edge unchanged.
+_ROBUST_BLUR_RADIUS = 1.5
+
+# Minimum signal required in the supporting metrics for change_ratio to
+# count as a "real" change.  Expressed as a fraction of each metric's own
+# threshold.  Values below these fractions indicate pure image noise rather
+# than structural bar movement.
+_CHANGE_RATIO_CORROBORATION_PROFILE_FRAC = 0.20   # profile_diff >= 20 % of its threshold
+_CHANGE_RATIO_CORROBORATION_EDGE_FRAC    = 0.25   # edge_shift_px  >= 25 % of its threshold
 
 
 def _resolve_expected_change(payload: Dict[str, Any]) -> bool:
@@ -111,6 +125,7 @@ def check_progress_change(
         crop_before.save(debug_dir / "progress_crop_before.png")
         crop_after.save(debug_dir / "progress_crop_after.png")
 
+    # ── Raw per-pixel diff (kept for diagnostics) ──────────────────────────
     before_arr = np.array(crop_before, dtype=np.int16)
     after_arr = np.array(crop_after, dtype=np.int16)
     abs_diff = np.abs(after_arr - before_arr)
@@ -119,15 +134,44 @@ def check_progress_change(
     change_ratio = float((max_per_pixel >= pixel_threshold).mean())
     mean_abs_pixel_diff = float(max_per_pixel.mean())
 
+    # ── Robust per-pixel diff (Gaussian-blurred to suppress noise) ─────────
+    # Randomly scattered perturbations (invisible noise, JPEG/resize artifacts)
+    # average out under the blur, while real bar edge movements — which affect
+    # entire consistent columns — survive.
+    crop_before_blurred = crop_before.filter(ImageFilter.GaussianBlur(radius=_ROBUST_BLUR_RADIUS))
+    crop_after_blurred  = crop_after.filter(ImageFilter.GaussianBlur(radius=_ROBUST_BLUR_RADIUS))
+    before_blur_arr = np.array(crop_before_blurred, dtype=np.int16)
+    after_blur_arr  = np.array(crop_after_blurred,  dtype=np.int16)
+    abs_diff_robust = np.abs(after_blur_arr - before_blur_arr)
+    max_per_pixel_robust = abs_diff_robust.max(axis=2)
+    change_ratio_robust = float((max_per_pixel_robust >= pixel_threshold).mean())
+
+    # ── Structural / profile metrics ───────────────────────────────────────
     before_gray = np.array(crop_before.convert("L"), dtype=np.float32) / 255.0
     after_gray = np.array(crop_after.convert("L"), dtype=np.float32) / 255.0
     profile_diff = float(np.mean(np.abs(after_gray.mean(axis=0) - before_gray.mean(axis=0))))
     edge_shift_px = _estimate_progress_edge_shift_px(before_gray, after_gray)
 
+    # ── Detection logic ────────────────────────────────────────────────────
+    # change_ratio_robust requires corroboration from at least one structural
+    # metric to count as "changed".  This prevents image-quality perturbations
+    # that raise change_ratio_robust above threshold (e.g. heavy JPEG artefacts
+    # or slight blur from cropping) from causing false positives when both
+    # profile_diff and edge_shift_px remain near zero.
+    corroboration_min_profile = profile_diff_threshold * _CHANGE_RATIO_CORROBORATION_PROFILE_FRAC
+    corroboration_min_edge    = edge_shift_threshold_px * _CHANGE_RATIO_CORROBORATION_EDGE_FRAC
+    change_ratio_corroborated = (
+        change_ratio_robust >= change_ratio_threshold
+        and (
+            profile_diff  >= corroboration_min_profile
+            or edge_shift_px >= corroboration_min_edge
+        )
+    )
+
     detected_changed = (
-        change_ratio >= change_ratio_threshold
-        or profile_diff >= profile_diff_threshold
-        or edge_shift_px >= edge_shift_threshold_px
+        change_ratio_corroborated
+        or profile_diff   >= profile_diff_threshold
+        or edge_shift_px  >= edge_shift_threshold_px
     )
     passed = detected_changed if expected_change else (not detected_changed)
 
@@ -135,7 +179,7 @@ def check_progress_change(
         "progress_change: "
         f"detected_changed={detected_changed} "
         f"expected_change={expected_change} "
-        f"change_ratio={change_ratio:.4f}/{change_ratio_threshold:.4f} "
+        f"change_ratio={change_ratio_robust:.4f}/{change_ratio_threshold:.4f} "
         f"profile_diff={profile_diff:.4f}/{profile_diff_threshold:.4f} "
         f"edge_shift_px={edge_shift_px:.2f}/{edge_shift_threshold_px:.2f}"
     )
@@ -157,6 +201,8 @@ def check_progress_change(
         "profile_diff_threshold": profile_diff_threshold,
         "edge_shift_threshold_px": edge_shift_threshold_px,
         "change_ratio": change_ratio,
+        "change_ratio_robust": change_ratio_robust,
+        "change_ratio_corroborated": change_ratio_corroborated,
         "profile_diff": profile_diff,
         "edge_shift_px": edge_shift_px,
         "mean_abs_pixel_diff": mean_abs_pixel_diff,
