@@ -1,0 +1,13 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/qq/qq_template_11.png",
+  "target_image": "../../screens/qq/qq_target_11.png",
+  "expected_passed": true,
+  "expected_bounds": [
+    43,
+    277,
+    2333,
+    374
+  ],
+  "bounds_tolerance": 40
+}

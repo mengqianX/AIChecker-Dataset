@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    924,
+    2151,
+    1038,
+    2220
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/baidudisk/baidudisk_1_before.png",
+  "screenshot_b": "../../screens/baidudisk/baidudisk_1_before.png",
+  "expected_passed": false
+}

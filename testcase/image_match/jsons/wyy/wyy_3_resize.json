@@ -1,0 +1,13 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/wyy/wyy_template_3.png",
+  "target_image": "../../screens/wyy/wyy_target_3_resize.png",
+  "expected_passed": true,
+  "expected_bounds": [
+    204,
+    1935,
+    744,
+    2067
+  ],
+  "bounds_tolerance": 40
+}

@@ -1,0 +1,8 @@
+{
+    "type": "count_change",
+    "screenshot_a": "../../screens/zhihu/zhihu_before_3.png",
+    "screenshot_b": "../../screens/zhihu/zhihu_after_3.png",
+    "bounds": [857, 486, 1038, 592],
+    "expected_passed": true,
+    "label": "pass"
+}

@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/youku/youku_1_before_resize.png",
+  "screenshot_b": "../../screens/youku/youku_1_after_resize.png",
+  "bounds": [
+    912,
+    1680,
+    1080,
+    1848
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

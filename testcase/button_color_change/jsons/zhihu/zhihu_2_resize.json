@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/zhihu/zhihu_2_before_resize.png",
+  "screenshot_b": "../../screens/zhihu/zhihu_2_after_resize.png",
+  "bounds": [
+    66,
+    2094,
+    150,
+    2178
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

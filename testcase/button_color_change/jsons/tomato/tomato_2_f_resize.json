@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/tomato/tomato_2_before.png",
+  "screenshot_b": "../../screens/tomato/tomato_2_before_resize.png",
+  "bounds": [
+    60,
+    2179,
+    156,
+    2275
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

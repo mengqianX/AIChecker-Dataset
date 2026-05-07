@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/weibo/weibo_before_1_resize.png",
+  "screenshot_b": "../../screens/weibo/weibo_after_1_resize.png",
+  "bounds": [
+    185,
+    792,
+    2173,
+    882
+  ],
+  "expected_passed": true
+}

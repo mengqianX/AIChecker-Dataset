@@ -1,0 +1,13 @@
+{
+  "type": "count_change",
+  "screenshot_a": "../../screens/douban/douban_before_1_resize.png",
+  "screenshot_b": "../../screens/douban/douban_after_1_resize.png",
+  "bounds": [
+    210,
+    1237,
+    360,
+    1290
+  ],
+  "expected_passed": true,
+  "label": "pass"
+}

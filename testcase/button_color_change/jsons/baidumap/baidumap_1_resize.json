@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/baidumap/baidumap_1_before_resize.png",
+  "screenshot_b": "../../screens/baidumap/baidumap_1_after_resize.png",
+  "bounds": [
+    264,
+    2073,
+    384,
+    2193
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

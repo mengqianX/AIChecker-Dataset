@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/tieba/tieba_2_before.png",
+  "screenshot_b": "../../screens/tieba/tieba_2_before.png",
+  "bounds": [
+    900,
+    1104,
+    1005,
+    1167
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

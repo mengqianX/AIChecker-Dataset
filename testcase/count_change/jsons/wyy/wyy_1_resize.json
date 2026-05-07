@@ -1,0 +1,13 @@
+{
+  "type": "count_change",
+  "screenshot_a": "../../screens/wyy/wyy_before_1_resize.png",
+  "screenshot_b": "../../screens/wyy/wyy_after_1_resize.png",
+  "bounds": [
+    870,
+    654,
+    1062,
+    726
+  ],
+  "expected_passed": true,
+  "label": "pass"
+}

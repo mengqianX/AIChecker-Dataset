@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/wyy/wyy_before_1_resize.png",
+  "screenshot_b": "../../screens/wyy/wyy_after_1_resize.png",
+  "bounds": [
+    33,
+    1671,
+    1047,
+    1731
+  ],
+  "expected_passed": true
+}

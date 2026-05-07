@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/dzdp/dzdp_3_before_resize.png",
+  "screenshot_b": "../../screens/dzdp/dzdp_3_after_resize.png",
+  "bounds": [
+    920,
+    1104,
+    1067,
+    1251
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

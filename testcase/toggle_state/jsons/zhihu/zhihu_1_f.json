@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    892,
+    505,
+    1032,
+    586
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/zhihu/zhihu_1_before.png",
+  "screenshot_b": "../../screens/zhihu/zhihu_1_before.png",
+  "expected_passed": false
+}

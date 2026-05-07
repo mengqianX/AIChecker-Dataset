@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/google/google_1_before.png",
+  "screenshot_b": "../../screens/google/google_1_before.png",
+  "bounds": [
+    892,
+    1683,
+    1016,
+    1827
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

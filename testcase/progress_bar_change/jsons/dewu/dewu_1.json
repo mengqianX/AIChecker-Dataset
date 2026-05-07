@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/dewu/dewu_before_1.png",
+  "screenshot_b": "../../screens/dewu/dewu_after_1.png",
+  "bounds": [
+    0,
+    2001,
+    1080,
+    2043
+  ],
+  "expected_passed": true
+}

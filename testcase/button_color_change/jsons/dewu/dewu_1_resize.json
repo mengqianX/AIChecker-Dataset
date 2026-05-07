@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/dewu/dewu_1_before_resize.png",
+  "screenshot_b": "../../screens/dewu/dewu_1_after_resize.png",
+  "bounds": [
+    880,
+    520,
+    1080,
+    631
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

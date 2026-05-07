@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/xiecheng/xiecheng_1_before_resize.png",
+  "screenshot_b": "../../screens/xiecheng/xiecheng_1_after_resize.png",
+  "bounds": [
+    889,
+    675,
+    1033,
+    765
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

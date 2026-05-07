@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/baidudisk/baidudisk_2_before.png",
+  "screenshot_b": "../../screens/baidudisk/baidudisk_2_after.png",
+  "bounds": [
+    924,
+    2151,
+    1038,
+    2220
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

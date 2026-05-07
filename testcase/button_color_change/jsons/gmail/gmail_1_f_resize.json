@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/gmail/gmail_1_before.png",
+  "screenshot_b": "../../screens/gmail/gmail_1_before_resize.png",
+  "bounds": [
+    870,
+    565,
+    984,
+    637
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

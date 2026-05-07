@@ -1,0 +1,13 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/amap/amap_template_3.png",
+  "target_image": "../../screens/amap/amap_target_3.png",
+  "expected_passed": true,
+  "expected_bounds": [
+    42,
+    1771,
+    1038,
+    1933
+  ],
+  "bounds_tolerance": 40
+}

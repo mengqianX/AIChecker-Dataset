@@ -1,0 +1,13 @@
+{
+  "type": "image_match",
+  "template_image": "../screens/sample/template.png",
+  "target_image": "../screens/sample/target_resize.png",
+  "expected_passed": true,
+  "expected_bounds": [
+    53,
+    483,
+    280,
+    710
+  ],
+  "bounds_tolerance": 40
+}

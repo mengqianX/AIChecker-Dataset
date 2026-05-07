@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/yt/yt_1_before.png",
+  "screenshot_b": "../../screens/yt/yt_1_before.png",
+  "bounds": [
+    880,
+    1253,
+    1020,
+    1334
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

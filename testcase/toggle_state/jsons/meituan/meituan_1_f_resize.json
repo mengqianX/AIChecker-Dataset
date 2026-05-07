@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    873,
+    1968,
+    1014,
+    2115
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/meituan/meituan_1_before.png",
+  "screenshot_b": "../../screens/meituan/meituan_1_before_resize.png",
+  "expected_passed": false
+}

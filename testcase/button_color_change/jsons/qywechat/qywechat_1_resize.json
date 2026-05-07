@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/qywechat/qywechat_1_before_resize.png",
+  "screenshot_b": "../../screens/qywechat/qywechat_1_after_resize.png",
+  "bounds": [
+    912,
+    1445,
+    1038,
+    1523
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

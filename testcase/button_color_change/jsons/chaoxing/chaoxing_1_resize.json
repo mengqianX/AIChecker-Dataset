@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/chaoxing/chaoxing_1_before_resize.png",
+  "screenshot_b": "../../screens/chaoxing/chaoxing_1_after_resize.png",
+  "bounds": [
+    915,
+    883,
+    1035,
+    955
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

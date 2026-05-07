@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/wyemail/wyemail_2_before_resize.png",
+  "screenshot_b": "../../screens/wyemail/wyemail_2_after_resize.png",
+  "bounds": [
+    831,
+    302,
+    1008,
+    419
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

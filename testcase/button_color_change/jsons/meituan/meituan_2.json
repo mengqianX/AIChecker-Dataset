@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/meituan/meituan_2_before.png",
+  "screenshot_b": "../../screens/meituan/meituan_2_after.png",
+  "bounds": [
+    33,
+    360,
+    381,
+    453
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

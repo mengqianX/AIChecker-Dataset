@@ -1,0 +1,8 @@
+{
+    "type": "count_change",
+    "screenshot_a": "../../screens/dzdp/dzdp_before_3.png",
+    "screenshot_b": "../../screens/dzdp/dzdp_after_3.png",
+    "bounds": [853, 488, 951, 554],
+    "expected_passed": true,
+    "label": "pass"
+}

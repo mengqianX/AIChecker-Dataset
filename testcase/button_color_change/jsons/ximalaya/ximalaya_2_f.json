@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/ximalaya/ximalaya_2_before.png",
+  "screenshot_b": "../../screens/ximalaya/ximalaya_2_before.png",
+  "bounds": [
+    71,
+    2180,
+    146,
+    2255
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

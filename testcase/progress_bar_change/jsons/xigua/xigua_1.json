@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/xigua/xigua_before_1.png",
+  "screenshot_b": "../../screens/xigua/xigua_after_1.png",
+  "bounds": [
+    48,
+    869,
+    2328,
+    948
+  ],
+  "expected_passed": true
+}

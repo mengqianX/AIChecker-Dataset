@@ -1,0 +1,13 @@
+{
+  "type": "count_change",
+  "screenshot_a": "../../screens/dewu/dewu_before_2_resize.png",
+  "screenshot_b": "../../screens/dewu/dewu_after_2_resize.png",
+  "bounds": [
+    199,
+    319,
+    341,
+    376
+  ],
+  "expected_passed": true,
+  "label": "pass"
+}

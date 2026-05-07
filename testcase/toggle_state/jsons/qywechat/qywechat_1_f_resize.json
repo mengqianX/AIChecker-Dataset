@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    912,
+    1445,
+    1038,
+    1523
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/qywechat/qywechat_1_before.png",
+  "screenshot_b": "../../screens/qywechat/qywechat_1_before_resize.png",
+  "expected_passed": false
+}

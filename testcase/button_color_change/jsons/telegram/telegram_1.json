@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/telegram/telegram_1_before.png",
+  "screenshot_b": "../../screens/telegram/telegram_1_after.png",
+  "bounds": [
+    903,
+    1903,
+    1014,
+    1963
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

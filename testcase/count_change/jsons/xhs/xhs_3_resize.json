@@ -1,0 +1,13 @@
+{
+  "type": "count_change",
+  "screenshot_a": "../../screens/xhs/xhs_before_3_resize.png",
+  "screenshot_b": "../../screens/xhs/xhs_after_3_resize.png",
+  "bounds": [
+    48,
+    302,
+    113,
+    350
+  ],
+  "expected_passed": true,
+  "label": "pass"
+}

@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/baidudisk/baidudisk_before_1_resize.png",
+  "screenshot_b": "../../screens/baidudisk/baidudisk_after_1_resize.png",
+  "bounds": [
+    252,
+    1812,
+    828,
+    1896
+  ],
+  "expected_passed": true
+}

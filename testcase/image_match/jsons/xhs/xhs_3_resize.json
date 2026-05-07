@@ -1,0 +1,13 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/xhs/xhs_template_3.png",
+  "target_image": "../../screens/xhs/xhs_target_3_resize.png",
+  "expected_passed": true,
+  "expected_bounds": [
+    996,
+    288,
+    1044,
+    336
+  ],
+  "bounds_tolerance": 40
+}

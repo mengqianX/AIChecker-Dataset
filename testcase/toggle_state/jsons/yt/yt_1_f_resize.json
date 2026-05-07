@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    880,
+    1253,
+    1020,
+    1334
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/yt/yt_1_before.png",
+  "screenshot_b": "../../screens/yt/yt_1_before_resize.png",
+  "expected_passed": false
+}

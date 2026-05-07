@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/spotify/spotify_2_before_resize.png",
+  "screenshot_b": "../../screens/spotify/spotify_2_after_resize.png",
+  "bounds": [
+    180,
+    168,
+    354,
+    264
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

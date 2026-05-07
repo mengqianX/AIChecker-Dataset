@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    889,
+    675,
+    1033,
+    765
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/xiecheng/xiecheng_1_before.png",
+  "screenshot_b": "../../screens/xiecheng/xiecheng_1_before_resize.png",
+  "expected_passed": false
+}

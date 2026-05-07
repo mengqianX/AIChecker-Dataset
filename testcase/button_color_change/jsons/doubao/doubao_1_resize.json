@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/doubao/doubao_1_before_resize.png",
+  "screenshot_b": "../../screens/doubao/doubao_1_after_resize.png",
+  "bounds": [
+    860,
+    1081,
+    992,
+    1147
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

@@ -1,0 +1,10 @@
+{
+  "type": "toggle_state",
+  "bounds": [100, 200, 200, 260],
+  "expected": true,
+  "ui_tree": {
+    "attributes": {"bounds": "[100,200][200,260]", "type": "toggle", "checked": true},
+    "children": []
+  },
+  "expected_passed": true
+}

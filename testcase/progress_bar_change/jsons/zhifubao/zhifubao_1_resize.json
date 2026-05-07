@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/zhifubao/zhifubao_before_1_resize.png",
+  "screenshot_b": "../../screens/zhifubao/zhifubao_after_1_resize.png",
+  "bounds": [
+    0,
+    2069,
+    1080,
+    2082
+  ],
+  "expected_passed": true
+}

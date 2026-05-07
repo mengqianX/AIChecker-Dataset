@@ -1,0 +1,13 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/dewu/dewu_template_8.png",
+  "target_image": "../../screens/dewu/dewu_target_8_resize.png",
+  "expected_passed": true,
+  "expected_bounds": [
+    248,
+    254,
+    1080,
+    387
+  ],
+  "bounds_tolerance": 40
+}

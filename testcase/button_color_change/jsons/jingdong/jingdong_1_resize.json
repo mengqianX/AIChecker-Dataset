@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/jingdong/jingdong_1_before_resize.png",
+  "screenshot_b": "../../screens/jingdong/jingdong_1_after_resize.png",
+  "bounds": [
+    942,
+    741,
+    1050,
+    804
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

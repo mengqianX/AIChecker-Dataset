@@ -1,0 +1,13 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/douyin/douyin_template_2.png",
+  "target_image": "../../screens/douyin/douyin_target_8_resize.png",
+  "expected_passed": false,
+  "expected_bounds": [
+    720,
+    325,
+    936,
+    409
+  ],
+  "bounds_tolerance": 40
+}

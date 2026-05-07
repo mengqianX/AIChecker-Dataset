@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/x/x_2_before.png",
+  "screenshot_b": "../../screens/x/x_2_before_resize.png",
+  "bounds": [
+    468,
+    2076,
+    612,
+    2244
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

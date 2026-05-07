@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/doubao/doubao_2_before.png",
+  "screenshot_b": "../../screens/doubao/doubao_2_before.png",
+  "bounds": [
+    33,
+    1918,
+    310,
+    2023
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

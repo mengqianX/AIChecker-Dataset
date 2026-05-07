@@ -1,0 +1,13 @@
+{
+  "type": "image_match",
+  "template_image": "../../screens/tieba/tieba_template_11.png",
+  "target_image": "../../screens/tieba/tieba_target_11_resize.png",
+  "expected_passed": true,
+  "expected_bounds": [
+    120,
+    252,
+    2210,
+    405
+  ],
+  "bounds_tolerance": 40
+}

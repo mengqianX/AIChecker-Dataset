@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/tomato/tomato_before_1.png",
+  "screenshot_b": "../../screens/tomato/tomato_after_1.png",
+  "bounds": [
+    156,
+    1435,
+    924,
+    1492
+  ],
+  "expected_passed": true
+}

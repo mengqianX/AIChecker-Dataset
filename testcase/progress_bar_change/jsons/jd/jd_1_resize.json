@@ -1,0 +1,12 @@
+{
+  "type": "progress_change",
+  "screenshot_a": "../../screens/jd/jd_before_1_resize.png",
+  "screenshot_b": "../../screens/jd/jd_after_1_resize.png",
+  "bounds": [
+    27,
+    2046,
+    1035,
+    2094
+  ],
+  "expected_passed": true
+}

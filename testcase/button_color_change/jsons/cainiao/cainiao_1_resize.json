@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/cainiao/cainiao_1_before_resize.png",
+  "screenshot_b": "../../screens/cainiao/cainiao_1_after_resize.png",
+  "bounds": [
+    286,
+    2103,
+    361,
+    2178
+  ],
+  "expected_color": "",
+  "expected_passed": true,
+  "label": "pass"
+}

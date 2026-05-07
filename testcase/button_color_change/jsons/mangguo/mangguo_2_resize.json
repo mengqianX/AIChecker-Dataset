@@ -1,0 +1,14 @@
+{
+  "type": "button_color_change",
+  "screenshot_a": "../../screens/mangguo/mangguo_2_before_resize.png",
+  "screenshot_b": "../../screens/mangguo/mangguo_2_after_resize.png",
+  "bounds": [
+    930,
+    1479,
+    1020,
+    1569
+  ],
+  "expected_color": "",
+  "expected_passed": false,
+  "label": "fail"
+}

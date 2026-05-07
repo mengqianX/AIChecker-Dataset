@@ -1,0 +1,13 @@
+{
+  "type": "toggle_state",
+  "bounds": [
+    904,
+    1948,
+    1044,
+    2029
+  ],
+  "expected": true,
+  "screenshot_a": "../../screens/fb/fb_1_before.png",
+  "screenshot_b": "../../screens/fb/fb_1_before.png",
+  "expected_passed": false
+}

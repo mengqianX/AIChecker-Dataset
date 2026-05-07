@@ -1,0 +1,13 @@
+{
+  "type": "count_change",
+  "screenshot_a": "../../screens/xmly/xmly_before_3_resize.png",
+  "screenshot_b": "../../screens/xmly/xmly_after_3_resize.png",
+  "bounds": [
+    162,
+    624,
+    276,
+    742
+  ],
+  "expected_passed": true,
+  "label": "pass"
+}
