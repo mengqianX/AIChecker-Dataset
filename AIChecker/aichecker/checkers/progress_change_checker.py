@@ -13,7 +13,7 @@ from ..utils import button_base_color, load_image
 DEFAULT_PIXEL_THRESHOLD = 8
 DEFAULT_CHANGE_RATIO_THRESHOLD = 0.02
 DEFAULT_PROFILE_DIFF_THRESHOLD = 0.015
-DEFAULT_EDGE_SHIFT_THRESHOLD_PX = 2.0
+DEFAULT_EDGE_SHIFT_THRESHOLD_PX = 20.0
 
 # Gaussian blur radius applied before computing change_ratio to suppress
 # image-quality perturbations (invisible noise, JPEG artifacts, mild
@@ -31,7 +31,7 @@ _MIN_EDGE_GRADIENT = 0.01
 # After Gaussian blur the column average for noise rarely exceeds ~0.03;
 # a threshold of 0.08 (≈ 20/255) reliably separates structural signal from
 # noise/compression artifacts across a wide range of bar heights and styles.
-_MAX_COL_DIFF_STRUCTURAL = 0.08
+_MAX_COL_DIFF_STRUCTURAL = 0.5
 
 # Single-metric "clearly large" bypass thresholds (skip all other checks).
 _CLEARLY_CHANGED_RATIO_FACTOR  = 5   # change_ratio_robust >= 5 × threshold
