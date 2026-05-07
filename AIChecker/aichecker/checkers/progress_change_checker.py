@@ -46,10 +46,10 @@ _RATIO_DOMINANT_FACTOR = 2.5
 _PROFILE_SUPPORT_FACTOR = 0.70
 
 # High-ratio fallback for weak-profile cases:
-# when change_ratio is very high, require only light structural support.
-_HIGH_RATIO_FACTOR = 1.9
-_WEAK_PROFILE_SUPPORT_FACTOR = 0.33
-_WEAK_MAX_COL_DIFF_SUPPORT = 0.045
+# when change_ratio is very high, require only a light profile support.
+# The profile floor is tuned to cover 0.0069/0.015 while rejecting 0.0060/0.015.
+_HIGH_RATIO_FACTOR = 2.8
+_WEAK_PROFILE_SUPPORT_FACTOR = 0.45
 
 # Extreme edge-shift fallback:
 # for very large shifts, relax max_col_diff gate but still require non-trivial
@@ -152,7 +152,6 @@ def _detect_progress_changed(
     high_ratio_with_weak_support = (
         change_ratio_robust >= change_ratio_threshold * _HIGH_RATIO_FACTOR
         and profile_diff >= profile_diff_threshold * _WEAK_PROFILE_SUPPORT_FACTOR
-        and max_col_diff >= _WEAK_MAX_COL_DIFF_SUPPORT
     )
 
     # PATH 6 — edge shift + structural column evidence.
