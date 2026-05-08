@@ -66,3 +66,4 @@ AIChecker/tests/image_match_output_compare/root
 .env.*.local
 
 .specstory/
+testcase/

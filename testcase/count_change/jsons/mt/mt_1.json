@@ -1,8 +1,0 @@
-{
-    "type": "count_change",
-    "screenshot_a": "../../screens/mt/mt_before_1.png",
-    "screenshot_b": "../../screens/mt/mt_after_1.png",
-    "bounds": [883, 2113, 911, 2178],
-    "expected_passed": true,
-    "label": "pass"
-}
