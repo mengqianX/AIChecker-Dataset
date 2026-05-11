@@ -13,9 +13,9 @@ from ..utils import load_image
 # 默认相似度阈值（用于模板匹配主阈值；测试样例已统一改为依赖此默认值）
 DEFAULT_SIMILARITY_THRESHOLD = 0.8
 # 默认缩放范围（用于多尺度匹配，放宽以覆盖不同 DPI/分辨率）
-DEFAULT_SCALE_MIN = 0.3
-DEFAULT_SCALE_MAX = 3.0
-DEFAULT_SCALE_STEP = 0.05
+DEFAULT_SCALE_MIN = 0.2
+DEFAULT_SCALE_MAX = 2.0
+DEFAULT_SCALE_STEP = 0.01
 # 默认匹配方法
 DEFAULT_MATCH_METHOD = cv2.TM_CCOEFF_NORMED
 
@@ -41,6 +41,28 @@ def _pil_to_cv2(pil_image: Image.Image) -> np.ndarray:
     # PIL是RGB，OpenCV是BGR
     rgb_array = np.array(pil_image.convert("RGB"))
     return cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
+
+
+def _load_swapped_match_pair(
+    payload: Dict[str, Any],
+) -> Tuple[Image.Image, Image.Image, str, str, bool]:
+    """
+    Load template/target from payload paths and apply the small-in-large swap convention.
+
+    Returns:
+        template_pil, target_pil, template_path, target_path (after any swap), swapped_by_size
+    """
+    template_path = _resolve_template_image(payload)
+    target_path = _resolve_target_image(payload)
+    template_pil = load_image(template_path)
+    target_pil = load_image(target_path)
+    tw, th = template_pil.size
+    gw, gh = target_pil.size
+    swapped_by_size = (tw * th) > (gw * gh)
+    if swapped_by_size:
+        template_pil, target_pil = target_pil, template_pil
+        template_path, target_path = target_path, template_path
+    return template_pil, target_pil, template_path, target_path, swapped_by_size
 
 
 def _multi_scale_template_match(
@@ -572,6 +594,8 @@ def _write_final_match_result_image(result: CheckResult, output: Path | None) ->
 def _check_image_match_template(
     payload: Dict[str, Any],
     output: Path | None = None,
+    *,
+    precached_swapped_pair: Tuple[Image.Image, Image.Image, str, str, bool] | None = None,
 ) -> CheckResult:
     """
     在目标图片中查找模板图片，支持多尺度匹配以适应不同分辨率。
@@ -607,10 +631,21 @@ def _check_image_match_template(
             - control_info: 匹配到的位置信息
             - details: 详细信息（相似度、bounds、缩放比例等）
     """
-    # 解析输入
-    template_path = _resolve_template_image(payload)
-    target_path = _resolve_target_image(payload)
-    
+    # 解析输入（可选用 precached_swapped_pair 避免重复读盘，由 check_image_match 统一加载）
+    if precached_swapped_pair is not None:
+        template_pil, target_pil, template_path, target_path, swapped_by_size = precached_swapped_pair
+    else:
+        template_path = _resolve_template_image(payload)
+        target_path = _resolve_target_image(payload)
+        template_pil = load_image(template_path)
+        target_pil = load_image(target_path)
+        tw0, th0 = template_pil.size
+        gw0, gh0 = target_pil.size
+        swapped_by_size = (tw0 * th0) > (gw0 * gh0)
+        if swapped_by_size:
+            template_pil, target_pil = target_pil, template_pil
+            template_path, target_path = target_path, template_path
+
     similarity_threshold = float(payload.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD))
     scale_min = float(payload.get("scale_min", DEFAULT_SCALE_MIN))
     scale_max = float(payload.get("scale_max", DEFAULT_SCALE_MAX))
@@ -640,18 +675,6 @@ def _check_image_match_template(
         "TM_SQDIFF_NORMED": cv2.TM_SQDIFF_NORMED,
     }
     match_method = match_method_map.get(match_method_str, DEFAULT_MATCH_METHOD)
-    
-    # 加载图片
-    template_pil = load_image(template_path)
-    target_pil = load_image(target_path)
-    
-    # 约定：在“大图”中找“小图”。若当前 template 比 target 大，则交换（避免在小图里找大图导致相似度恒为 0）
-    tw, th = template_pil.size
-    gw, gh = target_pil.size
-    swapped_by_size = (tw * th) > (gw * gh)
-    if swapped_by_size:
-        template_pil, target_pil = target_pil, template_pil
-        template_path, target_path = target_path, template_path
 
     # 计算实际可用缩放范围（与 _multi_scale_template_match 一致）
     tw, th = template_pil.size
@@ -1004,7 +1027,12 @@ def check_image_match(
     feature_payload["similarity_threshold"] = feature_threshold
 
     if backend == "template":
-        result = _check_image_match_template(template_payload, output=output)
+        precached = _load_swapped_match_pair(payload)
+        result = _check_image_match_template(
+            template_payload,
+            output=output,
+            precached_swapped_pair=precached,
+        )
         result.details["backend_used"] = "template"
         result.details["threshold_strategy"] = {
             "mode": "template_only",
@@ -1015,7 +1043,12 @@ def check_image_match(
     # 延迟导入避免模块加载时循环依赖
     from .image_match_checker_feature import check_image_match_feature
 
-    feature_result = check_image_match_feature(feature_payload, output=output)
+    precached = _load_swapped_match_pair(payload)
+    feature_result = check_image_match_feature(
+        feature_payload,
+        output=output,
+        precached_swapped_pair=precached,
+    )
     feature_result.details["backend_used"] = "feature"
     feature_result.details["threshold_strategy"] = {
         "mode": "feature_only" if backend == "feature" else "auto",
@@ -1060,7 +1093,11 @@ def check_image_match(
     # auto: 优先 feature；失败后可回退到模板匹配
     if feature_result.passed:
         if auto_bbox_fusion:
-            template_result_for_fusion = _check_image_match_template(template_payload, output=output)
+            template_result_for_fusion = _check_image_match_template(
+                template_payload,
+                output=output,
+                precached_swapped_pair=precached,
+            )
             f_bounds = feature_result.details.get("bounds")
             t_bounds = template_result_for_fusion.details.get("bounds")
             t_similarity = float(template_result_for_fusion.details.get("similarity", 0.0) or 0.0)
@@ -1122,7 +1159,11 @@ def check_image_match(
     if not fallback_to_template:
         return _finalize(feature_result)
 
-    template_result = _check_image_match_template(template_payload, output=output)
+    template_result = _check_image_match_template(
+        template_payload,
+        output=output,
+        precached_swapped_pair=precached,
+    )
     template_result.details["backend_used"] = "template_fallback"
     template_result.details["feature_failed_basis"] = feature_result.basis
     template_result.details["feature_similarity"] = feature_result.details.get("similarity")

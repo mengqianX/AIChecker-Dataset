@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Tuple, cast
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from ..models import Bounds, CheckResult, ControlInfo
 from ..utils import load_image
@@ -176,6 +177,8 @@ def _feature_match(
 def check_image_match_feature(
     payload: Dict[str, Any],
     output: Path | None = None,
+    *,
+    precached_swapped_pair: Tuple[Image.Image, Image.Image, str, str, bool] | None = None,
 ) -> CheckResult:
     """
     Feature-based image matching using ORB + BFMatcher + RANSAC.
@@ -189,9 +192,26 @@ def check_image_match_feature(
     - min_good_matches (default 12)
     - min_inliers (default 8)
     - ransac_reproj_threshold (default 5.0)
+
+    precached_swapped_pair:
+        Optional tuple from ``image_match_checker._load_swapped_match_pair`` so ``check_image_match``
+        can load images once and share them with template matching.
     """
-    template_path = _resolve_template_image(payload)
-    target_path = _resolve_target_image(payload)
+    if precached_swapped_pair is not None:
+        template_pil, target_pil, template_path, target_path, swapped_by_size = (
+            precached_swapped_pair
+        )
+    else:
+        template_path = _resolve_template_image(payload)
+        target_path = _resolve_target_image(payload)
+        template_pil = load_image(template_path)
+        target_pil = load_image(target_path)
+        tw, th = template_pil.size
+        gw, gh = target_pil.size
+        swapped_by_size = (tw * th) > (gw * gh)
+        if swapped_by_size:
+            template_pil, target_pil = target_pil, template_pil
+            template_path, target_path = target_path, template_path
 
     similarity_threshold = float(
         payload.get("similarity_threshold", DEFAULT_FEATURE_SIMILARITY_THRESHOLD)
@@ -203,17 +223,6 @@ def check_image_match_feature(
     min_good_matches = int(payload.get("min_good_matches", DEFAULT_MIN_GOOD_MATCHES))
     min_inliers = int(payload.get("min_inliers", DEFAULT_MIN_INLIERS))
     ransac_reproj_threshold = float(payload.get("ransac_reproj_threshold", 5.0))
-
-    template_pil = load_image(template_path)
-    target_pil = load_image(target_path)
-
-    # Keep the same convention as template matching: search small image in large image.
-    tw, th = template_pil.size
-    gw, gh = target_pil.size
-    swapped_by_size = (tw * th) > (gw * gh)
-    if swapped_by_size:
-        template_pil, target_pil = target_pil, template_pil
-        template_path, target_path = target_path, template_path
 
     template_cv = _pil_to_cv2(template_pil)
     target_cv = _pil_to_cv2(target_pil)
@@ -238,6 +247,7 @@ def check_image_match_feature(
     best_angle = 0
     best_raw: Dict[str, Any] | None = None
     best_similarity = -1.0
+    best_key: Tuple[int, int, float] = (-1, -1, -1.0)
     for angle in angle_candidates:
         rotated_template = _rotate_image_90n(template_cv, angle)
         raw = _feature_match(
