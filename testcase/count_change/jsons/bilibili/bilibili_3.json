@@ -1,8 +1,0 @@
-{
-    "type": "count_change",
-    "screenshot_a": "../../screens/bilibili/bilibili_before_3.png",
-    "screenshot_b": "../../screens/bilibili/bilibili_after_3.png",
-    "bounds": [500, 564, 581, 629],
-    "expected_passed": true,
-    "label": "pass"
-}

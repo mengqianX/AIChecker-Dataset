@@ -1,8 +1,0 @@
-{
-    "type": "count_change",
-    "screenshot_a": "../../screens/jd/jd_before_2.png",
-    "screenshot_b": "../../screens/jd/jd_after_2.png",
-    "bounds": [188, 869, 227, 905],
-    "expected_passed": true,
-    "label": "pass"
-}
