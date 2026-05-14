@@ -42,6 +42,16 @@ def run_cmd(cmd: List[str], cwd: Path) -> int:
     return completed.returncode
 
 
+def print_confusion_metrics(python_bin: Path) -> int:
+    metrics_cmd = [
+        str(python_bin),
+        "scripts/testing/calc_confusion_metrics.py",
+        "--checker",
+        "image_match",
+    ]
+    return run_cmd(metrics_cmd, REPO_ROOT)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run image_match pytest, then generate reports from pytest results."
@@ -118,6 +128,10 @@ def main() -> int:
     report_rc = run_cmd(report_cmd, REPO_ROOT)
     if report_rc != 0:
         return report_rc
+
+    metrics_rc = print_confusion_metrics(python_bin)
+    if metrics_rc != 0:
+        print("\n[WARN] Failed to print confusion metrics. Report generation has succeeded.")
 
     if pytest_rc != 0:
         return pytest_rc
