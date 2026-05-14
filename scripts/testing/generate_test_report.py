@@ -301,6 +301,10 @@ code{{background:#f2f6fb;padding:2px 6px;border-radius:6px;font-size:12px}}
 .error-cell{{white-space:normal!important;overflow-wrap:anywhere;word-break:break-word;min-width:320px;max-width:560px;line-height:1.5}}
 .error-summary-line{{display:block;margin-bottom:3px}}
 .error-summary-line:last-child{{margin-bottom:0}}
+.error-details{{margin-top:6px}}
+.error-details > summary{{cursor:pointer;color:#155eef;font-size:12px;user-select:none}}
+.error-details > summary:hover{{text-decoration:underline}}
+.error-full{{margin:6px 0 0;padding:8px 10px;background:#f8fbff;border:1px solid var(--border);border-radius:8px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:12px;line-height:1.45}}
 .secondary{{color:var(--muted);font-size:12px}}
 .section-head{{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:12px}}
 .anchor-links{{display:flex;flex-wrap:wrap;gap:8px}}
@@ -874,7 +878,8 @@ def app_summary_cards(rows: List[Dict[str, Any]]) -> str:
 
 def render_error_summary_cell(row: Dict[str, Any]) -> str:
     summary = str(row.get("error_summary", "-") or "-")
-    full_error = clean_text(str(row.get("error", "") or "-"))
+    full_error_raw = str(row.get("error", "") or "")
+    full_error = clean_text(full_error_raw or "-")
     summary_lines = "".join(
         f'<span class="error-summary-line">{escape(line)}</span>'
         for line in summary.splitlines()
@@ -882,7 +887,15 @@ def render_error_summary_cell(row: Dict[str, Any]) -> str:
     )
     if not summary_lines:
         summary_lines = '<span class="error-summary-line">-</span>'
-    return f'<td class="error-cell" title="{escape(full_error or "-")}">{summary_lines}</td>'
+    details_html = ""
+    if full_error_raw.strip():
+        details_html = (
+            '<details class="error-details">'
+            "<summary>展开完整错误</summary>"
+            f'<pre class="error-full">{escape(full_error_raw)}</pre>'
+            "</details>"
+        )
+    return f'<td class="error-cell" title="{escape(full_error or "-")}">{summary_lines}{details_html}</td>'
 
 
 def issue_digest_table(rows: List[Dict[str, Any]], page_dir: Path, checker: str, scope: str) -> str:
