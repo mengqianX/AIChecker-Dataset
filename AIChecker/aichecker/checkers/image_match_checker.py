@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -18,6 +21,8 @@ DEFAULT_SCALE_MAX = 2.0
 DEFAULT_SCALE_STEP = 0.1
 # 默认匹配方法
 DEFAULT_MATCH_METHOD = cv2.TM_CCOEFF_NORMED
+TIMING_ENV_VERBOSE = "AICHECKER_IMAGE_MATCH_TIMING_VERBOSE"
+TIMING_ENV_CSV_PATH = "AICHECKER_IMAGE_MATCH_TIMING_CSV"
 
 
 def _resolve_template_image(payload: Dict[str, Any]) -> str:
@@ -34,6 +39,94 @@ def _resolve_target_image(payload: Dict[str, Any]) -> str:
         if payload.get(key):
             return str(payload[key])
     raise KeyError("Payload must include 'target_image'")
+
+
+def _normalize_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
+def _resolve_timing_csv_path(payload: Dict[str, Any]) -> Path | None:
+    payload_path = str(payload.get("timing_csv_path", "")).strip()
+    env_path = str(os.getenv(TIMING_ENV_CSV_PATH, "")).strip()
+    raw = payload_path or env_path
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return p
+    return (Path(__file__).resolve().parents[3] / p).resolve()
+
+
+def _maybe_print_timing(payload: Dict[str, Any], line: str) -> None:
+    payload_verbose = _normalize_bool(payload.get("timing_verbose", False))
+    env_verbose = _normalize_bool(os.getenv(TIMING_ENV_VERBOSE, ""))
+    if payload_verbose or env_verbose:
+        print(line)
+
+
+def _append_timing_csv(
+    payload: Dict[str, Any],
+    result: CheckResult,
+    timing: Dict[str, Any],
+) -> None:
+    csv_path = _resolve_timing_csv_path(payload)
+    if csv_path is None:
+        return
+
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    field_names = [
+        "run_at",
+        "app",
+        "case_id",
+        "backend_used",
+        "passed",
+        "target_image",
+        "template_image",
+        "target_size",
+        "template_size",
+        "target_megapixels",
+        "target_file_size_mb",
+        "similarity",
+        "total_sec",
+        "feature_sec",
+        "template_sec",
+        "template_calls",
+        "write_result_sec",
+        "threshold_feature",
+        "threshold_template",
+        "basis",
+    ]
+    row = {
+        "run_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "app": str(payload.get("timing_app", payload.get("app", ""))),
+        "case_id": str(payload.get("timing_case_id", payload.get("case_id", ""))),
+        "backend_used": str(result.details.get("backend_used", "")),
+        "passed": bool(result.passed),
+        "target_image": str(payload.get("target_image", payload.get("target", ""))),
+        "template_image": str(payload.get("template_image", payload.get("template", ""))),
+        "target_size": str(timing.get("target_size", "")),
+        "template_size": str(timing.get("template_size", "")),
+        "target_megapixels": timing.get("target_megapixels", ""),
+        "target_file_size_mb": timing.get("target_file_size_mb", ""),
+        "similarity": result.details.get("similarity", ""),
+        "total_sec": timing.get("total_sec", ""),
+        "feature_sec": timing.get("feature_sec", ""),
+        "template_sec": timing.get("template_sec", ""),
+        "template_calls": timing.get("template_calls", ""),
+        "write_result_sec": timing.get("write_result_sec", ""),
+        "threshold_feature": timing.get("feature_similarity_threshold", ""),
+        "threshold_template": timing.get("template_similarity_threshold", ""),
+        "basis": str(result.basis).replace("\n", " "),
+    }
+    write_header = not csv_path.exists()
+    with csv_path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=field_names)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def _pil_to_cv2(pil_image: Image.Image) -> np.ndarray:
@@ -930,8 +1023,72 @@ def check_image_match(
     - auto_offscale_min_feature_good_matches: 边缘放行要求的最小feature匹配点数，默认4
     - auto_offscale_min_feature_similarity: 边缘放行要求的最小feature相似度，默认0.01
     """
+    started_at = time.perf_counter()
+    feature_sec = 0.0
+    template_sec = 0.0
+    template_calls = 0
+    write_result_sec = 0.0
+    target_size = ()
+    template_size = ()
+    target_megapixels = 0.0
+    target_file_size_mb = 0.0
+
     def _finalize(result: CheckResult) -> CheckResult:
+        nonlocal write_result_sec, target_size, template_size, target_megapixels, target_file_size_mb
+        write_started_at = time.perf_counter()
         _write_final_match_result_image(result, output)
+        write_result_sec += max(0.0, time.perf_counter() - write_started_at)
+
+        target_size = tuple(result.details.get("target_size") or ())
+        template_size = tuple(result.details.get("template_size") or ())
+        if len(target_size) == 2:
+            try:
+                tw = float(target_size[0])
+                th = float(target_size[1])
+                target_megapixels = (tw * th) / 1_000_000
+            except Exception:
+                target_megapixels = 0.0
+
+        target_path = str(payload.get("target_image", payload.get("target", ""))).strip()
+        if target_path:
+            target_file = Path(target_path).expanduser()
+            if not target_file.is_absolute():
+                target_file = (Path.cwd() / target_file).resolve()
+            try:
+                target_file_size_mb = target_file.stat().st_size / 1024.0 / 1024.0
+            except OSError:
+                target_file_size_mb = 0.0
+
+        total_sec = max(0.0, time.perf_counter() - started_at)
+        timing_summary = {
+            "total_sec": round(total_sec, 6),
+            "feature_sec": round(feature_sec, 6),
+            "template_sec": round(template_sec, 6),
+            "template_calls": template_calls,
+            "write_result_sec": round(write_result_sec, 6),
+            "target_size": target_size,
+            "template_size": template_size,
+            "target_megapixels": round(target_megapixels, 6),
+            "target_file_size_mb": round(target_file_size_mb, 6),
+            "feature_similarity_threshold": float(feature_threshold),
+            "template_similarity_threshold": float(template_threshold),
+        }
+        result.details["timing_breakdown"] = timing_summary
+        _append_timing_csv(payload, result, timing_summary)
+        _maybe_print_timing(
+            payload,
+            (
+                "[image_match_timing] "
+                f"backend={result.details.get('backend_used', 'unknown')} "
+                f"total={timing_summary['total_sec']:.3f}s "
+                f"feature={timing_summary['feature_sec']:.3f}s "
+                f"template={timing_summary['template_sec']:.3f}s "
+                f"write={timing_summary['write_result_sec']:.3f}s "
+                f"template_calls={template_calls} "
+                f"target_mp={timing_summary['target_megapixels']:.3f} "
+                f"case={payload.get('timing_case_id', payload.get('case_id', ''))}"
+            ),
+        )
         return result
 
     backend = str(payload.get("match_backend", "auto")).strip().lower()
@@ -962,7 +1119,10 @@ def check_image_match(
     feature_payload["similarity_threshold"] = feature_threshold
 
     if backend == "template":
+        template_started_at = time.perf_counter()
         result = _check_image_match_template(template_payload, output=output)
+        template_sec += max(0.0, time.perf_counter() - template_started_at)
+        template_calls += 1
         result.details["backend_used"] = "template"
         result.details["threshold_strategy"] = {
             "mode": "template_only",
@@ -973,7 +1133,9 @@ def check_image_match(
     # 延迟导入避免模块加载时循环依赖
     from .image_match_checker_feature import check_image_match_feature
 
+    feature_started_at = time.perf_counter()
     feature_result = check_image_match_feature(feature_payload, output=output)
+    feature_sec += max(0.0, time.perf_counter() - feature_started_at)
     feature_result.details["backend_used"] = "feature"
     feature_result.details["threshold_strategy"] = {
         "mode": "feature_only" if backend == "feature" else "auto",
@@ -1079,7 +1241,10 @@ def check_image_match(
     # auto: 优先 feature；失败后可回退到模板匹配
     if feature_result.passed:
         if auto_bbox_fusion:
+            template_started_at = time.perf_counter()
             template_result_for_fusion = _check_image_match_template(template_payload, output=output)
+            template_sec += max(0.0, time.perf_counter() - template_started_at)
+            template_calls += 1
             f_bounds = feature_result.details.get("bounds")
             t_bounds = template_result_for_fusion.details.get("bounds")
             t_similarity = float(template_result_for_fusion.details.get("similarity", 0.0) or 0.0)
@@ -1141,7 +1306,10 @@ def check_image_match(
     if not fallback_to_template:
         return _finalize(feature_result)
 
+    template_started_at = time.perf_counter()
     template_result = _check_image_match_template(template_payload, output=output)
+    template_sec += max(0.0, time.perf_counter() - template_started_at)
+    template_calls += 1
     template_result.details["backend_used"] = "template_fallback"
     template_result.details["feature_failed_basis"] = feature_result.basis
     template_result.details["feature_similarity"] = feature_result.details.get("similarity")
