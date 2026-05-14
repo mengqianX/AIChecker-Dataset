@@ -45,6 +45,7 @@ AIChecker/tests/screens/
 AIChecker/tests/jsons/
 AIChecker/tests/image_match_output/
 reports/
+testcase/
 
 # 文档目录（不提交）
 AIChecker/docs/
@@ -54,6 +55,7 @@ docs/
 AIChecker/debug/
 debug/
 AIChecker/tests/image_match_output
+AIChecker/tests/image_match_output_single_case
 AIChecker/tests/image_match_output_compare
 AIChecker/tests/image_match_output_compare/root
 
@@ -65,4 +67,10 @@ AIChecker/tests/image_match_output_compare/root
 .env.local
 .env.*.local
 
+# PaddleX cache directory
+AIChecker/.paddlex
+
+# cursor files
+.cursor/
 .specstory/
+
