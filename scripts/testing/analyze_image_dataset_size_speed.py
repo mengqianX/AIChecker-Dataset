@@ -69,9 +69,21 @@ def iter_images(root: Path) -> Iterable[Path]:
             yield p
 
 
-def collect_image_stats(dataset_name: str, root: Path) -> list[ImageStat]:
+def path_contains_any_keyword(path: Path, keywords: Sequence[str]) -> bool:
+    text = path.as_posix().lower()
+    return any(keyword.lower() in text for keyword in keywords if keyword.strip())
+
+
+def collect_image_stats(
+    dataset_name: str,
+    root: Path,
+    only_target: bool = False,
+    target_keywords: Sequence[str] = ("target",),
+) -> list[ImageStat]:
     stats: list[ImageStat] = []
     for image_path in iter_images(root):
+        if only_target and not path_contains_any_keyword(image_path, target_keywords):
+            continue
         try:
             with Image.open(image_path) as im:
                 width, height = im.size
@@ -315,6 +327,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print top-k largest images by pixels and by file size. Default: 5.",
     )
     parser.add_argument(
+        "--only-target",
+        action="store_true",
+        help="Only include images whose path contains target keywords (default keyword: target).",
+    )
+    parser.add_argument(
+        "--target-keywords",
+        default="target",
+        help=(
+            "Comma-separated keywords used by --only-target to filter image paths. "
+            "Default: target"
+        ),
+    )
+    parser.add_argument(
         "--runtime-csv",
         default="",
         help="Optional runtime CSV path for correlation analysis.",
@@ -334,6 +359,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    target_keywords = [item.strip() for item in str(args.target_keywords).split(",") if item.strip()]
+    if args.only_target and not target_keywords:
+        print("[ERROR] --only-target requires at least one keyword in --target-keywords")
+        return 1
+    if args.only_target:
+        print(f"[INFO] only-target mode enabled. keywords={target_keywords}")
 
     all_stats: list[ImageStat] = []
     dataset_to_stats: dict[str, list[ImageStat]] = {}
@@ -343,7 +374,12 @@ def main() -> int:
             print(f"[WARN] Dataset path does not exist: {dataset_path}")
             dataset_to_stats[dataset_name] = []
             continue
-        stats = collect_image_stats(dataset_name, dataset_path)
+        stats = collect_image_stats(
+            dataset_name,
+            dataset_path,
+            only_target=args.only_target,
+            target_keywords=target_keywords,
+        )
         dataset_to_stats[dataset_name] = stats
         all_stats.extend(stats)
 
