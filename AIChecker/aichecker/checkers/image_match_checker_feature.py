@@ -5,7 +5,6 @@ from typing import Any, Callable, Dict, List, Tuple, cast
 
 import cv2
 import numpy as np
-from PIL import Image
 
 from ..models import Bounds, CheckResult, ControlInfo
 from ..utils import load_image
@@ -119,8 +118,10 @@ def _feature_match(
     template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
     target_gray = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2GRAY)
 
-    orb_create = cast(Callable[..., cv2.ORB], getattr(cv2, "ORB_create"))
-    orb = orb_create(nfeatures=nfeatures)
+    # OpenCV ORB bindings are dynamically generated and commonly mismatch strict stubs
+    # in some IDE/type-checker versions. Treat as runtime Any for compatibility.
+    orb_create = cast(Callable[..., Any], getattr(cv2, "ORB_create"))
+    orb = cast(Any, orb_create(nfeatures=nfeatures))
     kp_template, des_template = orb.detectAndCompute(template_gray, None)
     kp_target, des_target = orb.detectAndCompute(target_gray, None)
 
@@ -177,8 +178,6 @@ def _feature_match(
 def check_image_match_feature(
     payload: Dict[str, Any],
     output: Path | None = None,
-    *,
-    precached_swapped_pair: Tuple[Image.Image, Image.Image, str, str, bool] | None = None,
 ) -> CheckResult:
     """
     Feature-based image matching using ORB + BFMatcher + RANSAC.
@@ -192,26 +191,9 @@ def check_image_match_feature(
     - min_good_matches (default 12)
     - min_inliers (default 8)
     - ransac_reproj_threshold (default 5.0)
-
-    precached_swapped_pair:
-        Optional tuple from ``image_match_checker._load_swapped_match_pair`` so ``check_image_match``
-        can load images once and share them with template matching.
     """
-    if precached_swapped_pair is not None:
-        template_pil, target_pil, template_path, target_path, swapped_by_size = (
-            precached_swapped_pair
-        )
-    else:
-        template_path = _resolve_template_image(payload)
-        target_path = _resolve_target_image(payload)
-        template_pil = load_image(template_path)
-        target_pil = load_image(target_path)
-        tw, th = template_pil.size
-        gw, gh = target_pil.size
-        swapped_by_size = (tw * th) > (gw * gh)
-        if swapped_by_size:
-            template_pil, target_pil = target_pil, template_pil
-            template_path, target_path = target_path, template_path
+    template_path = _resolve_template_image(payload)
+    target_path = _resolve_target_image(payload)
 
     similarity_threshold = float(
         payload.get("similarity_threshold", DEFAULT_FEATURE_SIMILARITY_THRESHOLD)
@@ -223,6 +205,17 @@ def check_image_match_feature(
     min_good_matches = int(payload.get("min_good_matches", DEFAULT_MIN_GOOD_MATCHES))
     min_inliers = int(payload.get("min_inliers", DEFAULT_MIN_INLIERS))
     ransac_reproj_threshold = float(payload.get("ransac_reproj_threshold", 5.0))
+
+    template_pil = load_image(template_path)
+    target_pil = load_image(target_path)
+
+    # Keep the same convention as template matching: search small image in large image.
+    tw, th = template_pil.size
+    gw, gh = target_pil.size
+    swapped_by_size = (tw * th) > (gw * gh)
+    if swapped_by_size:
+        template_pil, target_pil = target_pil, template_pil
+        template_path, target_path = target_path, template_path
 
     template_cv = _pil_to_cv2(template_pil)
     target_cv = _pil_to_cv2(target_pil)

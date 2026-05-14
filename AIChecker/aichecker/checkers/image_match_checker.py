@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -13,9 +13,9 @@ from ..utils import load_image
 # 默认相似度阈值（用于模板匹配主阈值；测试样例已统一改为依赖此默认值）
 DEFAULT_SIMILARITY_THRESHOLD = 0.8
 # 默认缩放范围（用于多尺度匹配，放宽以覆盖不同 DPI/分辨率）
-DEFAULT_SCALE_MIN = 0.2
+DEFAULT_SCALE_MIN = 0.3
 DEFAULT_SCALE_MAX = 2.0
-DEFAULT_SCALE_STEP = 0.01
+DEFAULT_SCALE_STEP = 0.1
 # 默认匹配方法
 DEFAULT_MATCH_METHOD = cv2.TM_CCOEFF_NORMED
 
@@ -41,28 +41,6 @@ def _pil_to_cv2(pil_image: Image.Image) -> np.ndarray:
     # PIL是RGB，OpenCV是BGR
     rgb_array = np.array(pil_image.convert("RGB"))
     return cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
-
-
-def _load_swapped_match_pair(
-    payload: Dict[str, Any],
-) -> Tuple[Image.Image, Image.Image, str, str, bool]:
-    """
-    Load template/target from payload paths and apply the small-in-large swap convention.
-
-    Returns:
-        template_pil, target_pil, template_path, target_path (after any swap), swapped_by_size
-    """
-    template_path = _resolve_template_image(payload)
-    target_path = _resolve_target_image(payload)
-    template_pil = load_image(template_path)
-    target_pil = load_image(target_path)
-    tw, th = template_pil.size
-    gw, gh = target_pil.size
-    swapped_by_size = (tw * th) > (gw * gh)
-    if swapped_by_size:
-        template_pil, target_pil = target_pil, template_pil
-        template_path, target_path = target_path, template_path
-    return template_pil, target_pil, template_path, target_path, swapped_by_size
 
 
 def _multi_scale_template_match(
@@ -113,22 +91,31 @@ def _multi_scale_template_match(
     actual_scale_max = min(scale_max, max_scale_w, max_scale_h)
     actual_scale_min = max(scale_min, 0.1)  # 至少缩小到10%
     
-    scales = np.arange(actual_scale_min, actual_scale_max + scale_step, scale_step)
-    
-    for scale in scales:
-        # 缩放模板
+    scales = np.arange(actual_scale_min, actual_scale_max + scale_step, scale_step, dtype=np.float32)
+
+    # Deduplicate integer sizes: multiple scales can map to same (w,h).
+    seen_sizes: set[Tuple[int, int]] = set()
+
+    for scale_f in scales:
+        scale = float(scale_f)
         scaled_w = int(template_w * scale)
         scaled_h = int(template_h * scale)
-        
+
         if scaled_w < 1 or scaled_h < 1 or scaled_w > target_w or scaled_h > target_h:
             continue
-        
-        scaled_template = cv2.resize(template, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)
-        
-        # 执行模板匹配
+        size_key = (scaled_w, scaled_h)
+        if size_key in seen_sizes:
+            continue
+        seen_sizes.add(size_key)
+
+        scaled_template = cv2.resize(
+            template,
+            (scaled_w, scaled_h),
+            interpolation=cv2.INTER_AREA,
+        )
+
         result = cv2.matchTemplate(target, scaled_template, method)
-        
-        # 根据匹配方法找到最佳匹配位置
+
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
         
         if method in (cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED):
@@ -170,38 +157,6 @@ def _multi_scale_template_match(
     bottom = max(top, min(bottom, target_h))
     
     return best_match_val, (left, top, right, bottom), best_scale
-
-
-def _compute_match_psr(
-    result_map: np.ndarray,
-    peak_loc: Tuple[int, int],
-    *,
-    exclusion_radius: int = 6,
-) -> float:
-    """
-    Peak-to-sidelobe ratio (PSR): (peak - mean_sidelobe) / std_sidelobe.
-    A higher PSR indicates a more distinctive match (less ambiguous).
-    """
-    if result_map.size == 0:
-        return 0.0
-    peak_x, peak_y = int(peak_loc[0]), int(peak_loc[1])
-    h, w = result_map.shape[:2]
-    x1 = max(0, peak_x - exclusion_radius)
-    y1 = max(0, peak_y - exclusion_radius)
-    x2 = min(w, peak_x + exclusion_radius + 1)
-    y2 = min(h, peak_y + exclusion_radius + 1)
-
-    mask = np.ones((h, w), dtype=bool)
-    mask[y1:y2, x1:x2] = False
-    sidelobe = result_map[mask]
-    if sidelobe.size < 20:
-        return 0.0
-    mean = float(np.mean(sidelobe))
-    std = float(np.std(sidelobe))
-    if std <= 1e-6:
-        return 0.0
-    peak = float(result_map[peak_y, peak_x])
-    return float((peak - mean) / std)
 
 
 def _expand_bounds(
@@ -594,8 +549,6 @@ def _write_final_match_result_image(result: CheckResult, output: Path | None) ->
 def _check_image_match_template(
     payload: Dict[str, Any],
     output: Path | None = None,
-    *,
-    precached_swapped_pair: Tuple[Image.Image, Image.Image, str, str, bool] | None = None,
 ) -> CheckResult:
     """
     在目标图片中查找模板图片，支持多尺度匹配以适应不同分辨率。
@@ -631,21 +584,10 @@ def _check_image_match_template(
             - control_info: 匹配到的位置信息
             - details: 详细信息（相似度、bounds、缩放比例等）
     """
-    # 解析输入（可选用 precached_swapped_pair 避免重复读盘，由 check_image_match 统一加载）
-    if precached_swapped_pair is not None:
-        template_pil, target_pil, template_path, target_path, swapped_by_size = precached_swapped_pair
-    else:
-        template_path = _resolve_template_image(payload)
-        target_path = _resolve_target_image(payload)
-        template_pil = load_image(template_path)
-        target_pil = load_image(target_path)
-        tw0, th0 = template_pil.size
-        gw0, gh0 = target_pil.size
-        swapped_by_size = (tw0 * th0) > (gw0 * gh0)
-        if swapped_by_size:
-            template_pil, target_pil = target_pil, template_pil
-            template_path, target_path = target_path, template_path
-
+    # 解析输入
+    template_path = _resolve_template_image(payload)
+    target_path = _resolve_target_image(payload)
+    
     similarity_threshold = float(payload.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD))
     scale_min = float(payload.get("scale_min", DEFAULT_SCALE_MIN))
     scale_max = float(payload.get("scale_max", DEFAULT_SCALE_MAX))
@@ -675,7 +617,20 @@ def _check_image_match_template(
         "TM_SQDIFF_NORMED": cv2.TM_SQDIFF_NORMED,
     }
     match_method = match_method_map.get(match_method_str, DEFAULT_MATCH_METHOD)
+    
+    # 加载图片
+    template_pil = load_image(template_path)
+    target_pil = load_image(target_path)
+    
+    # 约定：在“大图”中找“小图”。若当前 template 比 target 大，则交换（避免在小图里找大图导致相似度恒为 0）
+    tw, th = template_pil.size
+    gw, gh = target_pil.size
+    swapped_by_size = (tw * th) > (gw * gh)
+    if swapped_by_size:
+        template_pil, target_pil = target_pil, template_pil
+        template_path, target_path = target_path, template_path
 
+    # 计算实际可用缩放范围（与 _multi_scale_template_match 一致）
     # 计算实际可用缩放范围（与 _multi_scale_template_match 一致）
     tw, th = template_pil.size
     gw, gh = target_pil.size
@@ -695,25 +650,6 @@ def _check_image_match_template(
         scale_step=scale_step,
         method=match_method,
     )
-    # Compute PSR for the selected best scale/location to estimate match distinctiveness.
-    psr = 0.0
-    try:
-        tw, th = template_cv.shape[1], template_cv.shape[0]
-        sw = int(round(tw * float(best_scale)))
-        sh = int(round(th * float(best_scale)))
-        if sw >= 1 and sh >= 1 and sw <= target_cv.shape[1] and sh <= target_cv.shape[0]:
-            scaled_template = cv2.resize(template_cv, (sw, sh), interpolation=cv2.INTER_AREA)
-            result_map = cv2.matchTemplate(target_cv, scaled_template, match_method)
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result_map)
-            peak_loc_raw = (
-                min_loc
-                if match_method in (cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED)
-                else max_loc
-            )
-            peak_loc = (int(peak_loc_raw[0]), int(peak_loc_raw[1]))
-            psr = _compute_match_psr(result_map, peak_loc, exclusion_radius=6)
-    except Exception:
-        psr = 0.0
 
     # 二阶段 refinement：先粗匹配得到 ROI，再在局部区域做细粒度复检，提升定位精度。
     template_refine_enabled = bool(payload.get("template_refine", True))
@@ -905,7 +841,6 @@ def _check_image_match_template(
     details: Dict[str, Any] = {
         "method": "multi_scale_template_match",
         "similarity": similarity,
-        "psr": psr,
         "similarity_threshold": similarity_threshold,
         "bounds": bounds_tuple,
         "best_scale": best_scale,
@@ -1027,12 +962,7 @@ def check_image_match(
     feature_payload["similarity_threshold"] = feature_threshold
 
     if backend == "template":
-        precached = _load_swapped_match_pair(payload)
-        result = _check_image_match_template(
-            template_payload,
-            output=output,
-            precached_swapped_pair=precached,
-        )
+        result = _check_image_match_template(template_payload, output=output)
         result.details["backend_used"] = "template"
         result.details["threshold_strategy"] = {
             "mode": "template_only",
@@ -1043,12 +973,7 @@ def check_image_match(
     # 延迟导入避免模块加载时循环依赖
     from .image_match_checker_feature import check_image_match_feature
 
-    precached = _load_swapped_match_pair(payload)
-    feature_result = check_image_match_feature(
-        feature_payload,
-        output=output,
-        precached_swapped_pair=precached,
-    )
+    feature_result = check_image_match_feature(feature_payload, output=output)
     feature_result.details["backend_used"] = "feature"
     feature_result.details["threshold_strategy"] = {
         "mode": "feature_only" if backend == "feature" else "auto",
@@ -1080,24 +1005,81 @@ def check_image_match(
         and feature_similarity >= feature_threshold * 0.5
         and feature_inlier_ratio >= strong_feature_min_inlier_ratio
     )
-    if strong_feature_gate and not feature_result.passed:
+
+    # 宽条模板（如标题栏/工具栏）在跨端缩放下常出现“少量但稳定”的特征匹配：
+    # 覆盖率低会压低 similarity，但 homography + inlier ratio 仍有可信信号。
+    template_size_for_gate = feature_result.details.get("template_size") or ()
+    target_size_for_gate = feature_result.details.get("target_size") or ()
+    template_aspect_for_gate = 0.0
+    target_width_ratio_for_gate = 0.0
+    if (
+        isinstance(template_size_for_gate, (list, tuple))
+        and len(template_size_for_gate) == 2
+        and template_size_for_gate[0]
+        and template_size_for_gate[1]
+    ):
+        tw_gate = float(template_size_for_gate[0])
+        th_gate = float(template_size_for_gate[1])
+        template_aspect_for_gate = max(tw_gate / max(th_gate, 1.0), th_gate / max(tw_gate, 1.0))
+        if (
+            isinstance(target_size_for_gate, (list, tuple))
+            and len(target_size_for_gate) == 2
+            and target_size_for_gate[0]
+        ):
+            target_width_ratio_for_gate = float(target_size_for_gate[0]) / max(tw_gate, 1.0)
+    matched_w = float(feature_stats.get("matched_template_width", 0.0) or 0.0)
+    matched_h = float(feature_stats.get("matched_template_height", 0.0) or 0.0)
+    matched_scale_x = (
+        matched_w / float(max(template_size_for_gate[0], 1))
+        if isinstance(template_size_for_gate, (list, tuple)) and len(template_size_for_gate) == 2
+        else 0.0
+    )
+    matched_scale_y = (
+        matched_h / float(max(template_size_for_gate[1], 1))
+        if isinstance(template_size_for_gate, (list, tuple)) and len(template_size_for_gate) == 2
+        else 0.0
+    )
+    strip_feature_gate = (
+        bool(payload.get("strip_feature_gate_enabled", True))
+        and feature_h
+        and feature_good >= int(payload.get("strip_feature_min_good_matches", 14))
+        and feature_inliers >= int(payload.get("strip_feature_min_inliers", 8))
+        and feature_inlier_ratio >= float(payload.get("strip_feature_min_inlier_ratio", 0.5))
+        and feature_similarity >= feature_threshold * float(payload.get("strip_feature_similarity_ratio", 0.75))
+        and template_aspect_for_gate >= float(payload.get("strip_feature_min_template_aspect", 4.0))
+        and target_width_ratio_for_gate >= float(payload.get("strip_feature_min_target_width_ratio", 1.8))
+        and 0.6 <= matched_scale_x <= 1.4
+        and 0.5 <= matched_scale_y <= 1.8
+    )
+    if (strong_feature_gate or strip_feature_gate) and not feature_result.passed:
         feature_result.passed = True
-        feature_result.basis = (
-            "image_match_feature: Passed by strong geometry gate. "
-            f"similarity={feature_similarity:.4f}, good_matches={feature_good}, "
-            f"inliers={feature_inliers}, inlier_ratio={feature_inlier_ratio:.3f}"
-        )
-        feature_result.details["strong_feature_gate"] = True
+        if strong_feature_gate:
+            feature_result.basis = (
+                "image_match_feature: Passed by strong geometry gate. "
+                f"similarity={feature_similarity:.4f}, good_matches={feature_good}, "
+                f"inliers={feature_inliers}, inlier_ratio={feature_inlier_ratio:.3f}"
+            )
+            feature_result.details["strong_feature_gate"] = True
+        else:
+            feature_result.basis = (
+                "image_match_feature: Passed by strip geometry gate. "
+                f"similarity={feature_similarity:.4f}, good_matches={feature_good}, "
+                f"inliers={feature_inliers}, inlier_ratio={feature_inlier_ratio:.3f}, "
+                f"template_aspect={template_aspect_for_gate:.2f}"
+            )
+            feature_result.details["strip_feature_gate"] = {
+                "applied": True,
+                "template_aspect": template_aspect_for_gate,
+                "target_width_ratio": target_width_ratio_for_gate,
+                "matched_scale_x": matched_scale_x,
+                "matched_scale_y": matched_scale_y,
+            }
         # 继续走后续 auto 流程，以便做 bbox 融合优化（不直接 return）。
 
     # auto: 优先 feature；失败后可回退到模板匹配
     if feature_result.passed:
         if auto_bbox_fusion:
-            template_result_for_fusion = _check_image_match_template(
-                template_payload,
-                output=output,
-                precached_swapped_pair=precached,
-            )
+            template_result_for_fusion = _check_image_match_template(template_payload, output=output)
             f_bounds = feature_result.details.get("bounds")
             t_bounds = template_result_for_fusion.details.get("bounds")
             t_similarity = float(template_result_for_fusion.details.get("similarity", 0.0) or 0.0)
@@ -1159,56 +1141,11 @@ def check_image_match(
     if not fallback_to_template:
         return _finalize(feature_result)
 
-    template_result = _check_image_match_template(
-        template_payload,
-        output=output,
-        precached_swapped_pair=precached,
-    )
+    template_result = _check_image_match_template(template_payload, output=output)
     template_result.details["backend_used"] = "template_fallback"
     template_result.details["feature_failed_basis"] = feature_result.basis
     template_result.details["feature_similarity"] = feature_result.details.get("similarity")
     template_result.details["threshold_strategy"] = feature_result.details.get("threshold_strategy")
-
-    # template_fallback ambiguity guard (PSR):
-    # When feature provides weak/no evidence, template matching can produce high correlation on repetitive UI patterns.
-    # Use PSR to reject low-distinctiveness peaks.
-    if template_result.passed:
-        psr_min = float(payload.get("template_fallback_min_psr", 7.0))
-        psr = float(template_result.details.get("psr", 0.0) or 0.0)
-        sim = float(template_result.details.get("similarity", 0.0) or 0.0)
-        b = template_result.details.get("bounds") or (0, 0, 0, 0)
-        bw = max(int(b[2]) - int(b[0]), 0) if isinstance(b, (list, tuple)) and len(b) == 4 else 0
-        bh = max(int(b[3]) - int(b[1]), 0) if isinstance(b, (list, tuple)) and len(b) == 4 else 0
-        matched_area = bw * bh
-        psr_guard_min_matched_area = int(payload.get("template_fallback_psr_guard_min_matched_area", 2000))
-        psr_guard_applies = matched_area >= psr_guard_min_matched_area
-        # Allow extremely confident similarity to pass even if PSR is modest.
-        allow_low_psr_if_sim_ge = float(payload.get("template_fallback_allow_low_psr_if_sim_ge", 0.95))
-        if psr_guard_applies and sim < allow_low_psr_if_sim_ge and psr > 0.0 and psr < psr_min:
-            template_result.passed = False
-            template_result.details["rejection_reason"] = "template_fallback_low_psr"
-            template_result.details["template_fallback_psr_guard"] = {
-                "enabled": True,
-                "psr": psr,
-                "psr_min": psr_min,
-                "matched_area": matched_area,
-                "psr_guard_min_matched_area": psr_guard_min_matched_area,
-                "allow_low_psr_if_sim_ge": allow_low_psr_if_sim_ge,
-            }
-            template_result.basis = (
-                "image_match: Template-fallback match rejected by PSR guard. "
-                f"similarity={sim:.4f}, psr={psr:.2f} < psr_min={psr_min:.2f}"
-            )
-        else:
-            template_result.details["template_fallback_psr_guard"] = {
-                "enabled": True,
-                "applied": False,
-                "psr": psr,
-                "psr_min": psr_min,
-                "matched_area": matched_area,
-                "psr_guard_min_matched_area": psr_guard_min_matched_area,
-                "allow_low_psr_if_sim_ge": allow_low_psr_if_sim_ge,
-            }
 
     # auto 模式默认：若用户未显式给 template 阈值，可按场景自适应放宽。
     # 典型场景：横向长条组件（高宽比很大）在跨端布局中像素差异明显，原阈值过高会漏报。
@@ -1281,6 +1218,67 @@ def check_image_match(
                 f"similarity={template_similarity:.4f}, relaxed_threshold={relaxed_template_threshold:.4f}"
             )
             template_result.details["passed_by_relaxed_template_threshold"] = True
+
+    # auto + 小模板兜底放行：
+    # 仅在 auto fallback 场景下启用，避免全局降阈值；用于修复“小图标 + 明显缩放”导致的漏报。
+    if (
+        bool(payload.get("auto_small_template_relax", True))
+        and not template_result.passed
+        and "template_similarity_threshold" not in payload
+    ):
+        template_similarity = float(template_result.details.get("similarity", 0.0) or 0.0)
+        template_size = template_result.details.get("template_size") or ()
+        template_best_scale = float(template_result.details.get("best_scale", 0.0) or 0.0)
+        rejection_reason = str(template_result.details.get("rejection_reason") or "")
+        feature_stats_for_small = feature_result.details.get("feature_stats", {}) or {}
+        feature_good_for_small = int(feature_stats_for_small.get("good_matches", 0) or 0)
+        feature_h_for_small = bool(feature_stats_for_small.get("homography_found", False))
+        relaxed_threshold_small = float(payload.get("auto_small_template_relaxed_threshold", 0.76))
+        max_template_side = int(payload.get("auto_small_template_max_side", 64))
+        max_best_scale = float(payload.get("auto_small_template_max_scale", 0.45))
+        max_feature_good = int(payload.get("auto_small_template_max_feature_good_matches", 2))
+        can_relax_small = False
+        if (
+            isinstance(template_size, (list, tuple))
+            and len(template_size) == 2
+            and template_size[0]
+            and template_size[1]
+        ):
+            w = int(template_size[0])
+            h = int(template_size[1])
+            template_max_side = max(w, h)
+            can_relax_small = (
+                template_max_side <= max_template_side
+                and template_best_scale <= max_best_scale
+                and template_similarity >= relaxed_threshold_small
+                and rejection_reason in ("", "boundary_scale")
+                and not feature_h_for_small
+                and feature_good_for_small <= max_feature_good
+            )
+            template_result.details["auto_small_template_relax"] = {
+                "enabled": True,
+                "can_relax": can_relax_small,
+                "template_similarity": template_similarity,
+                "best_scale": template_best_scale,
+                "template_max_side": template_max_side,
+                "feature_good_matches": feature_good_for_small,
+                "feature_homography_found": feature_h_for_small,
+                "rejection_reason": rejection_reason,
+                "constraints": {
+                    "relaxed_threshold": relaxed_threshold_small,
+                    "max_template_side": max_template_side,
+                    "max_best_scale": max_best_scale,
+                    "max_feature_good_matches": max_feature_good,
+                },
+            }
+        if can_relax_small:
+            template_result.passed = True
+            template_result.basis = (
+                "image_match: Passed by auto small-template relax. "
+                f"similarity={template_similarity:.4f}, relaxed_threshold={relaxed_threshold_small:.4f}, "
+                f"scale={template_best_scale:.2f}"
+            )
+            template_result.details["passed_by_auto_small_template_relax"] = True
 
     # auto + offscale 边缘放行：
     # 仅在“接近 offscale 阈值、且有最低 feature 支持、且缩放不极端”时放行，尽量避免引入误报。
