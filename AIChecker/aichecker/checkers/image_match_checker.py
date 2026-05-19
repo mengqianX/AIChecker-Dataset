@@ -457,6 +457,7 @@ def _run_atomic_template_match(
     scale_step: float,
     match_method: int,
     payload: Dict[str, Any],
+    coarse_bounds: Tuple[int, int, int, int] | None = None,
 ) -> Dict[str, Any]:
     """
     Atomic decomposition + per-part matching + score fusion.
@@ -514,52 +515,113 @@ def _run_atomic_template_match(
     else:
         auto_decision["reason"] = "forced_on"
 
-    part_results: List[Dict[str, Any]] = []
-    hit_boxes_target: List[Tuple[int, int, int, int]] = []
-    hit_boxes_template: List[Tuple[int, int, int, int]] = []
-    hit_scales: List[float] = []
-    sim_values: List[float] = []
-    hit_count = 0
+    def _run_once(
+        search_target: np.ndarray,
+        target_offset_xy: Tuple[int, int] = (0, 0),
+    ) -> Dict[str, Any]:
+        part_results: List[Dict[str, Any]] = []
+        hit_boxes_target: List[Tuple[int, int, int, int]] = []
+        hit_boxes_template: List[Tuple[int, int, int, int]] = []
+        hit_scales: List[float] = []
+        sim_values: List[float] = []
+        hit_count = 0
+        ox, oy = int(target_offset_xy[0]), int(target_offset_xy[1])
 
-    for idx, part in enumerate(parts):
-        sim, box, scale = _multi_scale_template_match(
-            part["crop"],
-            target_cv,
-            scale_min=scale_min,
-            scale_max=scale_max,
-            scale_step=scale_step,
-            method=match_method,
-        )
-        sim_norm = _clamp01(sim)
-        sim_values.append(sim_norm)
-        passed = sim >= part_threshold
-        if passed:
-            hit_count += 1
-            hit_boxes_target.append(box)
-            hit_boxes_template.append(part["box"])
-            hit_scales.append(scale)
-        part_results.append(
-            {
-                "index": idx,
-                "template_box": part["box"],
-                "target_box": box,
-                "similarity": sim,
-                "passed": passed,
-                "scale": scale,
-                "area_ratio": part["area_ratio"],
-            }
-        )
+        for idx, part in enumerate(parts):
+            sim, box_local, scale = _multi_scale_template_match(
+                part["crop"],
+                search_target,
+                scale_min=scale_min,
+                scale_max=scale_max,
+                scale_step=scale_step,
+                method=match_method,
+            )
+            box_global = (
+                int(box_local[0]) + ox,
+                int(box_local[1]) + oy,
+                int(box_local[2]) + ox,
+                int(box_local[3]) + oy,
+            )
+            sim_norm = _clamp01(sim)
+            sim_values.append(sim_norm)
+            passed = sim >= part_threshold
+            if passed:
+                hit_count += 1
+                hit_boxes_target.append(box_global)
+                hit_boxes_template.append(part["box"])
+                hit_scales.append(scale)
+            part_results.append(
+                {
+                    "index": idx,
+                    "template_box": part["box"],
+                    "target_box": box_global,
+                    "similarity": sim,
+                    "passed": passed,
+                    "scale": scale,
+                    "area_ratio": part["area_ratio"],
+                }
+            )
 
-    hit_ratio = float(hit_count) / float(max(len(parts), 1))
-    mean_similarity = float(np.mean(sim_values)) if sim_values else 0.0
-    geometry_score = _compute_atomic_geometry_score(hit_boxes_template, hit_boxes_target)
-    final_similarity = _clamp01(w_hit * hit_ratio + w_sim * mean_similarity + w_geo * geometry_score)
+        hit_ratio = float(hit_count) / float(max(len(parts), 1))
+        mean_similarity = float(np.mean(sim_values)) if sim_values else 0.0
+        geometry_score = _compute_atomic_geometry_score(hit_boxes_template, hit_boxes_target)
+        final_similarity = _clamp01(w_hit * hit_ratio + w_sim * mean_similarity + w_geo * geometry_score)
+        final_bounds = _bbox_union(hit_boxes_target) if hit_boxes_target else (0, 0, 0, 0)
+        final_scale = float(np.mean(hit_scales)) if hit_scales else 1.0
+        return {
+            "part_results": part_results,
+            "hit_count": hit_count,
+            "hit_ratio": hit_ratio,
+            "mean_similarity": mean_similarity,
+            "geometry_score": geometry_score,
+            "final_similarity": final_similarity,
+            "final_bounds": final_bounds,
+            "final_scale": final_scale,
+        }
 
-    if hit_boxes_target:
-        final_bounds = _bbox_union(hit_boxes_target)
-    else:
-        final_bounds = (0, 0, 0, 0)
-    final_scale = float(np.mean(hit_scales)) if hit_scales else 1.0
+    roi_first_enabled = bool(payload.get("atomic_roi_first", True))
+    roi_padding_ratio = float(payload.get("atomic_roi_padding_ratio", 1.2))
+    fallback_to_full = bool(payload.get("atomic_roi_fallback_to_full", True))
+    fallback_min_hit_ratio = float(payload.get("atomic_roi_fallback_min_hit_ratio", 1.0))
+    fallback_similarity_gap = float(payload.get("atomic_roi_fallback_similarity_gap", 0.0))
+    roi_meta: Dict[str, Any] = {
+        "enabled": roi_first_enabled,
+        "used": False,
+        "bounds": None,
+        "fallback_to_full": False,
+        "timing_sec": 0.0,
+    }
+
+    selected = None
+    full_out = None
+    roi_out = None
+    full_started_at = 0.0
+    full_sec = 0.0
+
+    if roi_first_enabled and coarse_bounds is not None and coarse_bounds != (0, 0, 0, 0):
+        h, w = target_cv.shape[:2]
+        roi_bounds = _expand_bounds(coarse_bounds, w, h, roi_padding_ratio)
+        x1, y1, x2, y2 = roi_bounds
+        roi = target_cv[y1:y2, x1:x2]
+        if roi.size > 0 and (x2 - x1) > 0 and (y2 - y1) > 0:
+            roi_meta["used"] = True
+            roi_meta["bounds"] = roi_bounds
+            roi_started_at = time.perf_counter()
+            roi_out = _run_once(roi, target_offset_xy=(x1, y1))
+            roi_meta["timing_sec"] = max(0.0, time.perf_counter() - roi_started_at)
+            should_fallback = fallback_to_full and (
+                float(roi_out["hit_ratio"]) < max(0.0, min(1.0, fallback_min_hit_ratio))
+                or float(roi_out["final_similarity"]) + max(0.0, fallback_similarity_gap) < similarity_threshold
+            )
+            roi_meta["fallback_to_full"] = should_fallback
+            if not should_fallback:
+                selected = roi_out
+
+    if selected is None:
+        full_started_at = time.perf_counter()
+        full_out = _run_once(target_cv, target_offset_xy=(0, 0))
+        full_sec = max(0.0, time.perf_counter() - full_started_at)
+        selected = full_out
 
     return {
         "enabled": True,
@@ -569,14 +631,22 @@ def _run_atomic_template_match(
         "parts_count": len(parts),
         "part_similarity_threshold": part_threshold,
         "weights": {"hit": w_hit, "similarity": w_sim, "geometry": w_geo},
-        "part_results": part_results,
-        "hit_count": hit_count,
-        "hit_ratio": hit_ratio,
-        "mean_similarity": mean_similarity,
-        "geometry_score": geometry_score,
-        "final_similarity": final_similarity,
-        "final_bounds": final_bounds,
-        "final_scale": final_scale,
+        "part_results": selected["part_results"],
+        "hit_count": selected["hit_count"],
+        "hit_ratio": selected["hit_ratio"],
+        "mean_similarity": selected["mean_similarity"],
+        "geometry_score": selected["geometry_score"],
+        "final_similarity": selected["final_similarity"],
+        "final_bounds": selected["final_bounds"],
+        "final_scale": selected["final_scale"],
+        "atomic_roi": roi_meta,
+        "atomic_full_timing_sec": full_sec,
+        "atomic_roi_timing_sec": float(roi_meta["timing_sec"]),
+        "atomic_roi_used": bool(roi_meta["used"]),
+        "atomic_roi_bounds": roi_meta["bounds"],
+        "atomic_fallback_to_full": bool(roi_meta["fallback_to_full"]),
+        "atomic_result_source": "roi" if selected is roi_out else "full",
+        "atomic_full_result": full_out,
     }
 
 
@@ -811,6 +881,7 @@ def _check_image_match_template(
         scale_step=scale_step,
         match_method=match_method,
         payload=payload,
+        coarse_bounds=bounds_tuple,
     )
     if atomic_info.get("applied"):
         atomic_similarity = float(atomic_info.get("final_similarity", 0.0) or 0.0)
