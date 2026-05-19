@@ -685,7 +685,7 @@ def _check_image_match_template(
     scale_min = float(payload.get("scale_min", DEFAULT_SCALE_MIN))
     scale_max = float(payload.get("scale_max", DEFAULT_SCALE_MAX))
     scale_step = float(payload.get("scale_step", DEFAULT_SCALE_STEP))
-    boundary_guard = bool(payload.get("boundary_guard", True))
+    boundary_guard = bool(payload.get("boundary_guard", False))
     # 边界保护默认只对“命中最小缩放边界”更敏感（极小缩放更容易误匹配）。
     # 若你明确希望对“命中最大缩放边界”也做同样的拒绝，可设置 boundary_guard_upper=true。
     boundary_guard_upper = bool(payload.get("boundary_guard_upper", False))
@@ -693,7 +693,7 @@ def _check_image_match_template(
     offscale_guard = bool(payload.get("offscale_guard", True))
     # 默认采用“更宽松”off-scale 保护：
     # - 约 0.7x~1.3x 的缩放通常不触发额外拒绝
-    # - 即使触发，附加阈值也更小，尽量降低跨端分辨率场景漏报
+    # - 即使触发，附加阈值也更小，尽量降低跨端分辨率场景漏报 
     offscale_min_deviation = float(payload.get("offscale_min_deviation", 0.5))
     offscale_similarity_margin = float(payload.get("offscale_similarity_margin", 0.01))
     offscale_extra_per_unit = float(payload.get("offscale_extra_per_unit", 0.04))
