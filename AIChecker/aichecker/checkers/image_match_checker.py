@@ -1387,67 +1387,6 @@ def check_image_match(
             )
             template_result.details["passed_by_relaxed_template_threshold"] = True
 
-    # auto + 小模板兜底放行：
-    # 仅在 auto fallback 场景下启用，避免全局降阈值；用于修复“小图标 + 明显缩放”导致的漏报。
-    if (
-        bool(payload.get("auto_small_template_relax", True))
-        and not template_result.passed
-        and "template_similarity_threshold" not in payload
-    ):
-        template_similarity = float(template_result.details.get("similarity", 0.0) or 0.0)
-        template_size = template_result.details.get("template_size") or ()
-        template_best_scale = float(template_result.details.get("best_scale", 0.0) or 0.0)
-        rejection_reason = str(template_result.details.get("rejection_reason") or "")
-        feature_stats_for_small = feature_result.details.get("feature_stats", {}) or {}
-        feature_good_for_small = int(feature_stats_for_small.get("good_matches", 0) or 0)
-        feature_h_for_small = bool(feature_stats_for_small.get("homography_found", False))
-        relaxed_threshold_small = float(payload.get("auto_small_template_relaxed_threshold", 0.76))
-        max_template_side = int(payload.get("auto_small_template_max_side", 64))
-        max_best_scale = float(payload.get("auto_small_template_max_scale", 0.45))
-        max_feature_good = int(payload.get("auto_small_template_max_feature_good_matches", 2))
-        can_relax_small = False
-        if (
-            isinstance(template_size, (list, tuple))
-            and len(template_size) == 2
-            and template_size[0]
-            and template_size[1]
-        ):
-            w = int(template_size[0])
-            h = int(template_size[1])
-            template_max_side = max(w, h)
-            can_relax_small = (
-                template_max_side <= max_template_side
-                and template_best_scale <= max_best_scale
-                and template_similarity >= relaxed_threshold_small
-                and rejection_reason in ("", "boundary_scale")
-                and not feature_h_for_small
-                and feature_good_for_small <= max_feature_good
-            )
-            template_result.details["auto_small_template_relax"] = {
-                "enabled": True,
-                "can_relax": can_relax_small,
-                "template_similarity": template_similarity,
-                "best_scale": template_best_scale,
-                "template_max_side": template_max_side,
-                "feature_good_matches": feature_good_for_small,
-                "feature_homography_found": feature_h_for_small,
-                "rejection_reason": rejection_reason,
-                "constraints": {
-                    "relaxed_threshold": relaxed_threshold_small,
-                    "max_template_side": max_template_side,
-                    "max_best_scale": max_best_scale,
-                    "max_feature_good_matches": max_feature_good,
-                },
-            }
-        if can_relax_small:
-            template_result.passed = True
-            template_result.basis = (
-                "image_match: Passed by auto small-template relax. "
-                f"similarity={template_similarity:.4f}, relaxed_threshold={relaxed_threshold_small:.4f}, "
-                f"scale={template_best_scale:.2f}"
-            )
-            template_result.details["passed_by_auto_small_template_relax"] = True
-
     # auto + offscale 边缘放行：
     # 仅在“接近 offscale 阈值、且有最低 feature 支持、且缩放不极端”时放行，尽量避免引入误报。
     auto_offscale_near_threshold_relax = bool(payload.get("auto_offscale_near_threshold_relax", True))

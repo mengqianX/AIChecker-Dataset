@@ -74,3 +74,9 @@ AIChecker/.paddlex
 .cursor/
 .specstory/
 
+# ocr
+AIChecker/aichecker/checkers/image_match_checker_ocr.py
+AIChecker/aichecker/tests/regression/test_image_match_ocr_accuracy.py
+
+*.docx
+*.md
