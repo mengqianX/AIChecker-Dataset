@@ -99,6 +99,15 @@ def _append_timing_csv(
         "threshold_template",
         "basis",
     ]
+    timing_target_size = timing.get("target_size", result.details.get("target_size", ""))
+    timing_template_size = timing.get("template_size", result.details.get("template_size", ""))
+    timing_target_mp = timing.get("target_megapixels", "")
+    if timing_target_mp == "" and isinstance(timing_target_size, (list, tuple)) and len(timing_target_size) == 2:
+        try:
+            timing_target_mp = (float(timing_target_size[0]) * float(timing_target_size[1])) / 1_000_000
+        except Exception:
+            timing_target_mp = ""
+
     row = {
         "run_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "app": str(payload.get("timing_app", payload.get("app", ""))),
@@ -107,9 +116,9 @@ def _append_timing_csv(
         "passed": bool(result.passed),
         "target_image": str(payload.get("target_image", payload.get("target", ""))),
         "template_image": str(payload.get("template_image", payload.get("template", ""))),
-        "target_size": str(timing.get("target_size", "")),
-        "template_size": str(timing.get("template_size", "")),
-        "target_megapixels": timing.get("target_megapixels", ""),
+        "target_size": str(timing_target_size),
+        "template_size": str(timing_template_size),
+        "target_megapixels": timing_target_mp,
         "target_file_size_mb": timing.get("target_file_size_mb", ""),
         "similarity": result.details.get("similarity", ""),
         "total_sec": timing.get("total_sec", ""),
@@ -143,6 +152,7 @@ def _multi_scale_template_match(
     scale_max: float = DEFAULT_SCALE_MAX,
     scale_step: float = DEFAULT_SCALE_STEP,
     method: int = DEFAULT_MATCH_METHOD,
+    debug_stats: Dict[str, Any] | None = None,
 ) -> Tuple[float, Tuple[int, int, int, int], float]:
     """
     多尺度模板匹配
@@ -184,7 +194,13 @@ def _multi_scale_template_match(
     actual_scale_max = min(scale_max, max_scale_w, max_scale_h)
     actual_scale_min = max(scale_min, 0.1)  # 至少缩小到10%
     
+    started_at = time.perf_counter()
     scales = np.arange(actual_scale_min, actual_scale_max + scale_step, scale_step, dtype=np.float32)
+    generated_scale_count = int(scales.size)
+    invalid_scale_count = 0
+    deduplicated_scale_count = 0
+    tried_scale_count = 0
+    scale_costs_ms: List[Tuple[float, float]] = []
 
     # Deduplicate integer sizes: multiple scales can map to same (w,h).
     seen_sizes: set[Tuple[int, int]] = set()
@@ -195,11 +211,15 @@ def _multi_scale_template_match(
         scaled_h = int(template_h * scale)
 
         if scaled_w < 1 or scaled_h < 1 or scaled_w > target_w or scaled_h > target_h:
+            invalid_scale_count += 1
             continue
         size_key = (scaled_w, scaled_h)
         if size_key in seen_sizes:
+            deduplicated_scale_count += 1
             continue
         seen_sizes.add(size_key)
+        tried_scale_count += 1
+        scale_started_at = time.perf_counter()
 
         scaled_template = cv2.resize(
             template,
@@ -233,8 +253,21 @@ def _multi_scale_template_match(
             best_location = match_loc
             best_scale = scale
             best_size = (scaled_w, scaled_h)
+        if debug_stats is not None:
+            scale_costs_ms.append((scale, (time.perf_counter() - scale_started_at) * 1000.0))
     
     if best_location is None:
+        if debug_stats is not None:
+            debug_stats.update(
+                {
+                    "generated_scale_count": generated_scale_count,
+                    "tried_scale_count": tried_scale_count,
+                    "invalid_scale_count": invalid_scale_count,
+                    "deduplicated_scale_count": deduplicated_scale_count,
+                    "elapsed_ms": round((time.perf_counter() - started_at) * 1000.0, 3),
+                    "top_scale_cost_ms": [],
+                }
+            )
         return 0.0, (0, 0, 0, 0), 1.0
     
     # 计算bounds
@@ -249,6 +282,21 @@ def _multi_scale_template_match(
     right = max(left, min(right, target_w))
     bottom = max(top, min(bottom, target_h))
     
+    if debug_stats is not None:
+        top_costs = sorted(scale_costs_ms, key=lambda item: item[1], reverse=True)[:3]
+        debug_stats.update(
+            {
+                "generated_scale_count": generated_scale_count,
+                "tried_scale_count": tried_scale_count,
+                "invalid_scale_count": invalid_scale_count,
+                "deduplicated_scale_count": deduplicated_scale_count,
+                "elapsed_ms": round((time.perf_counter() - started_at) * 1000.0, 3),
+                "top_scale_cost_ms": [
+                    {"scale": round(scale, 3), "cost_ms": round(cost_ms, 3)}
+                    for scale, cost_ms in top_costs
+                ],
+            }
+        )
     return best_match_val, (left, top, right, bottom), best_scale
 
 
@@ -804,7 +852,10 @@ def _check_image_match_template(
     template_cv = _pil_to_cv2(template_pil)
     target_cv = _pil_to_cv2(target_pil)
     
+    match_perf: Dict[str, Any] = {}
+    template_started_at = time.perf_counter()
     # 执行多尺度模板匹配
+    coarse_debug: Dict[str, Any] = {}
     similarity, bounds_tuple, best_scale = _multi_scale_template_match(
         template_cv,
         target_cv,
@@ -812,7 +863,10 @@ def _check_image_match_template(
         scale_max=scale_max,
         scale_step=scale_step,
         method=match_method,
+        debug_stats=coarse_debug,
     )
+    match_perf["coarse_match_ms"] = round((time.perf_counter() - template_started_at) * 1000.0, 3)
+    match_perf["coarse_scale_stats"] = coarse_debug
 
     # 二阶段 refinement：先粗匹配得到 ROI，再在局部区域做细粒度复检，提升定位精度。
     template_refine_enabled = bool(payload.get("template_refine", True))
@@ -822,6 +876,7 @@ def _check_image_match_template(
         "accepted": False,
     }
     if template_refine_enabled and bounds_tuple != (0, 0, 0, 0):
+        refine_started_at = time.perf_counter()
         target_h, target_w = target_cv.shape[:2]
         refine_padding_ratio = float(payload.get("refine_padding_ratio", 0.2))
         refine_scale_window = float(payload.get("refine_scale_window", 0.25))
@@ -842,6 +897,7 @@ def _check_image_match_template(
             }
         )
         if roi.size > 0:
+            refine_debug: Dict[str, Any] = {}
             local_scale_min = max(0.1, best_scale * (1.0 - refine_scale_window))
             local_scale_max = max(local_scale_min + 0.01, best_scale * (1.0 + refine_scale_window))
             refine_similarity, refine_local_bounds, refine_scale = _multi_scale_template_match(
@@ -851,6 +907,7 @@ def _check_image_match_template(
                 scale_max=local_scale_max,
                 scale_step=refine_scale_step,
                 method=match_method,
+                debug_stats=refine_debug,
             )
             rl, rt, rr, rb = refine_local_bounds
             refine_global_bounds = (x1 + rl, y1 + rt, x1 + rr, y1 + rb)
@@ -871,7 +928,10 @@ def _check_image_match_template(
                 bounds_tuple = refine_global_bounds
                 best_scale = refine_scale
                 refine_info["accepted"] = True
+            refine_info["scale_stats"] = refine_debug
+        match_perf["refine_ms"] = round((time.perf_counter() - refine_started_at) * 1000.0, 3)
 
+    atomic_started_at = time.perf_counter()
     atomic_info = _run_atomic_template_match(
         template_cv=template_cv,
         target_cv=target_cv,
@@ -883,6 +943,7 @@ def _check_image_match_template(
         payload=payload,
         coarse_bounds=bounds_tuple,
     )
+    match_perf["atomic_ms"] = round((time.perf_counter() - atomic_started_at) * 1000.0, 3)
     if atomic_info.get("applied"):
         atomic_similarity = float(atomic_info.get("final_similarity", 0.0) or 0.0)
         if atomic_similarity >= similarity:
@@ -1043,6 +1104,31 @@ def _check_image_match_template(
         },
         "template_refine": refine_info,
         "template_atomic": atomic_info,
+        "perf_debug": {
+            "template_total_ms": round((time.perf_counter() - template_started_at) * 1000.0, 3),
+            "target_megapixels": round((target_pil.size[0] * target_pil.size[1]) / 1_000_000.0, 6),
+            "scale_count_configured": (
+                int(np.floor((max(scale_max - scale_min, 0.0) / max(scale_step, 1e-6)))) + 1
+                if scale_step > 0
+                else 0
+            ),
+            "coarse_roi_area_ratio": (
+                round(
+                    max(
+                        0.0,
+                        min(
+                            1.0,
+                            ((bounds_tuple[2] - bounds_tuple[0]) * (bounds_tuple[3] - bounds_tuple[1]))
+                            / float(max(target_pil.size[0] * target_pil.size[1], 1)),
+                        ),
+                    ),
+                    6,
+                )
+                if bounds_tuple != (0, 0, 0, 0)
+                else 0.0
+            ),
+            "stage_cost_ms": match_perf,
+        },
     }
     
     # 调试输出：红框标出匹配区域，便于直观查看
@@ -1131,6 +1217,7 @@ def check_image_match(
                 target_file_size_mb = 0.0
 
         total_sec = max(0.0, time.perf_counter() - started_at)
+        timing_target_mp = round(target_megapixels, 6)
         timing_summary = {
             "total_sec": round(total_sec, 6),
             "feature_sec": round(feature_sec, 6),
@@ -1139,7 +1226,6 @@ def check_image_match(
             "write_result_sec": round(write_result_sec, 6),
             "target_size": target_size,
             "template_size": template_size,
-            "target_megapixels": round(target_megapixels, 6),
             "target_file_size_mb": round(target_file_size_mb, 6),
             "feature_similarity_threshold": float(feature_threshold),
             "template_similarity_threshold": float(template_threshold),
@@ -1156,7 +1242,7 @@ def check_image_match(
                 f"template={timing_summary['template_sec']:.3f}s "
                 f"write={timing_summary['write_result_sec']:.3f}s "
                 f"template_calls={template_calls} "
-                f"target_mp={timing_summary['target_megapixels']:.3f} "
+                f"target_mp={timing_target_mp:.3f} "
                 f"case={payload.get('timing_case_id', payload.get('case_id', ''))}"
             ),
         )
