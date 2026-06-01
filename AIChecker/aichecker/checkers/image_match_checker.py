@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -153,6 +154,9 @@ def _multi_scale_template_match(
     scale_step: float = DEFAULT_SCALE_STEP,
     method: int = DEFAULT_MATCH_METHOD,
     debug_stats: Dict[str, Any] | None = None,
+    parallel_enabled: bool = False,
+    parallel_workers: int = 0,
+    parallel_chunks: int = 0,
 ) -> Tuple[float, Tuple[int, int, int, int], float]:
     """
     多尺度模板匹配
@@ -199,17 +203,15 @@ def _multi_scale_template_match(
     generated_scale_count = int(scales.size)
     invalid_scale_count = 0
     deduplicated_scale_count = 0
-    tried_scale_count = 0
     scale_costs_ms: List[Tuple[float, float]] = []
+    scale_scores: List[Tuple[float, float]] = []
 
-    # Deduplicate integer sizes: multiple scales can map to same (w,h).
     seen_sizes: set[Tuple[int, int]] = set()
-
+    candidates: List[Tuple[float, int, int]] = []
     for scale_f in scales:
         scale = float(scale_f)
         scaled_w = int(template_w * scale)
         scaled_h = int(template_h * scale)
-
         if scaled_w < 1 or scaled_h < 1 or scaled_w > target_w or scaled_h > target_h:
             invalid_scale_count += 1
             continue
@@ -218,43 +220,60 @@ def _multi_scale_template_match(
             deduplicated_scale_count += 1
             continue
         seen_sizes.add(size_key)
-        tried_scale_count += 1
-        scale_started_at = time.perf_counter()
+        candidates.append((scale, scaled_w, scaled_h))
+    tried_scale_count = len(candidates)
 
-        scaled_template = cv2.resize(
-            template,
-            (scaled_w, scaled_h),
-            interpolation=cv2.INTER_AREA,
-        )
-
-        result = cv2.matchTemplate(target, scaled_template, method)
-
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-        
-        if method in (cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED):
-            # 对于SQDIFF方法，值越小越好
-            # TM_SQDIFF_NORMED的值在0-1之间，值越小越好，转换为相似度：1.0 - min_val
-            # TM_SQDIFF的值可能很大，值越小越好，但难以归一化，建议使用TM_SQDIFF_NORMED
-            if method == cv2.TM_SQDIFF_NORMED:
-                match_val = 1.0 - min_val  # 转换为相似度（0-1，越大越好）
+    def _eval_candidates(items: List[Tuple[float, int, int]]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for scale, scaled_w, scaled_h in items:
+            scale_started_at = time.perf_counter()
+            scaled_template = cv2.resize(template, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)
+            result = cv2.matchTemplate(target, scaled_template, method)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            if method in (cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED):
+                match_val = (1.0 - min_val) if method == cv2.TM_SQDIFF_NORMED else -min_val
+                match_loc = min_loc
             else:
-                # TM_SQDIFF: 值越小越好，但值可能很大，使用负值以便统一比较
-                # 注意：这种情况下相似度可能为负，建议使用TM_SQDIFF_NORMED
-                match_val = -min_val
-            match_loc = min_loc
-        else:
-            # 对于其他方法（CCOEFF, CCORR等），值越大越好
-            match_val = max_val
-            match_loc = max_loc
-        
-        # 更新最佳匹配（统一使用"越大越好"的比较方式）
+                match_val = max_val
+                match_loc = max_loc
+            rows.append(
+                {
+                    "scale": scale,
+                    "match_val": float(match_val),
+                    "match_loc": match_loc,
+                    "size": (scaled_w, scaled_h),
+                    "cost_ms": (time.perf_counter() - scale_started_at) * 1000.0,
+                }
+            )
+        return rows
+
+    use_parallel = bool(parallel_enabled and tried_scale_count > 1)
+    outputs: List[Dict[str, Any]] = []
+    if use_parallel:
+        workers = int(parallel_workers) if int(parallel_workers) > 0 else min(4, tried_scale_count)
+        chunks = int(parallel_chunks) if int(parallel_chunks) > 0 else workers
+        chunks = max(1, min(chunks, tried_scale_count))
+        chunk_size = max(1, (tried_scale_count + chunks - 1) // chunks)
+        tasks = [candidates[i : i + chunk_size] for i in range(0, tried_scale_count, chunk_size)]
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for task_rows in executor.map(_eval_candidates, tasks):
+                outputs.extend(task_rows)
+    else:
+        outputs = _eval_candidates(candidates)
+
+    for item in outputs:
+        scale = float(item["scale"])
+        match_val = float(item["match_val"])
+        match_loc = item["match_loc"]
+        scaled_w, scaled_h = item["size"]
         if match_val > best_match_val:
             best_match_val = match_val
             best_location = match_loc
             best_scale = scale
             best_size = (scaled_w, scaled_h)
         if debug_stats is not None:
-            scale_costs_ms.append((scale, (time.perf_counter() - scale_started_at) * 1000.0))
+            scale_costs_ms.append((scale, float(item["cost_ms"])))
+            scale_scores.append((scale, match_val))
     
     if best_location is None:
         if debug_stats is not None:
@@ -262,10 +281,14 @@ def _multi_scale_template_match(
                 {
                     "generated_scale_count": generated_scale_count,
                     "tried_scale_count": tried_scale_count,
+                    "parallel_used": use_parallel,
+                    "parallel_workers": int(parallel_workers),
+                    "parallel_chunks": int(parallel_chunks),
                     "invalid_scale_count": invalid_scale_count,
                     "deduplicated_scale_count": deduplicated_scale_count,
                     "elapsed_ms": round((time.perf_counter() - started_at) * 1000.0, 3),
                     "top_scale_cost_ms": [],
+                    "top_similarity_scales": [],
                 }
             )
         return 0.0, (0, 0, 0, 0), 1.0
@@ -288,12 +311,19 @@ def _multi_scale_template_match(
             {
                 "generated_scale_count": generated_scale_count,
                 "tried_scale_count": tried_scale_count,
+                "parallel_used": use_parallel,
+                "parallel_workers": int(parallel_workers),
+                "parallel_chunks": int(parallel_chunks),
                 "invalid_scale_count": invalid_scale_count,
                 "deduplicated_scale_count": deduplicated_scale_count,
                 "elapsed_ms": round((time.perf_counter() - started_at) * 1000.0, 3),
                 "top_scale_cost_ms": [
                     {"scale": round(scale, 3), "cost_ms": round(cost_ms, 3)}
                     for scale, cost_ms in top_costs
+                ],
+                "top_similarity_scales": [
+                    {"scale": round(scale, 3), "score": round(score, 6)}
+                    for scale, score in sorted(scale_scores, key=lambda item: item[1], reverse=True)[:5]
                 ],
             }
         )
@@ -515,6 +545,9 @@ def _run_atomic_template_match(
     # - True  / "on": force enable
     # - "auto" (default): auto-detect whether decomposition is needed
     auto_mode_raw = payload.get("auto_decompose_template", "auto")
+    scale_parallel_enabled = bool(payload.get("scale_parallel_enabled", True))
+    scale_parallel_workers = int(payload.get("scale_parallel_workers", 4))
+    scale_parallel_chunks = int(payload.get("scale_parallel_chunks", 4))
     auto_mode = str(auto_mode_raw).strip().lower()
     if isinstance(auto_mode_raw, bool):
         auto_mode = "on" if auto_mode_raw else "off"
@@ -583,6 +616,9 @@ def _run_atomic_template_match(
                 scale_max=scale_max,
                 scale_step=scale_step,
                 method=match_method,
+                parallel_enabled=scale_parallel_enabled,
+                parallel_workers=scale_parallel_workers,
+                parallel_chunks=scale_parallel_chunks,
             )
             box_global = (
                 int(box_local[0]) + ox,
@@ -816,6 +852,9 @@ def _check_image_match_template(
     offscale_similarity_margin = float(payload.get("offscale_similarity_margin", 0.01))
     offscale_extra_per_unit = float(payload.get("offscale_extra_per_unit", 0.04))
     offscale_max_extra = float(payload.get("offscale_max_extra", 0.05))
+    scale_parallel_enabled = bool(payload.get("scale_parallel_enabled", False))
+    scale_parallel_workers = int(payload.get("scale_parallel_workers", 0))
+    scale_parallel_chunks = int(payload.get("scale_parallel_chunks", 0))
     
     # 解析匹配方法
     match_method_str = payload.get("match_method", "TM_CCOEFF_NORMED")
@@ -864,6 +903,9 @@ def _check_image_match_template(
         scale_step=scale_step,
         method=match_method,
         debug_stats=coarse_debug,
+        parallel_enabled=scale_parallel_enabled,
+        parallel_workers=scale_parallel_workers,
+        parallel_chunks=scale_parallel_chunks,
     )
     match_perf["coarse_match_ms"] = round((time.perf_counter() - template_started_at) * 1000.0, 3)
     match_perf["coarse_scale_stats"] = coarse_debug
@@ -908,6 +950,9 @@ def _check_image_match_template(
                 scale_step=refine_scale_step,
                 method=match_method,
                 debug_stats=refine_debug,
+                parallel_enabled=scale_parallel_enabled,
+                parallel_workers=scale_parallel_workers,
+                parallel_chunks=scale_parallel_chunks,
             )
             rl, rt, rr, rb = refine_local_bounds
             refine_global_bounds = (x1 + rl, y1 + rt, x1 + rr, y1 + rb)
@@ -950,6 +995,31 @@ def _check_image_match_template(
             similarity = atomic_similarity
             bounds_tuple = tuple(atomic_info.get("final_bounds", bounds_tuple))
             best_scale = float(atomic_info.get("final_scale", best_scale) or best_scale)
+
+    topk_window = float(payload.get("topk_hit_window", max(scale_step * 0.5, 0.02)))
+    coarse_top_scales = [
+        float(item.get("scale", 0.0) or 0.0)
+        for item in (coarse_debug.get("top_similarity_scales", []) or [])
+    ]
+
+    def _hit_at_k(k: int) -> bool:
+        for candidate_scale in coarse_top_scales[:k]:
+            if abs(candidate_scale - best_scale) <= topk_window:
+                return True
+        return False
+
+    topk_hit_summary = {
+        "enabled": True,
+        "window": topk_window,
+        "best_scale": best_scale,
+        "coarse_top_scales": coarse_top_scales[:5],
+        "hit_at_1": _hit_at_k(1),
+        "hit_at_3": _hit_at_k(3),
+        "hit_at_5": _hit_at_k(5),
+    }
+    topk_hit_summary["fallback_triggered_at_1"] = not topk_hit_summary["hit_at_1"]
+    topk_hit_summary["fallback_triggered_at_3"] = not topk_hit_summary["hit_at_3"]
+    topk_hit_summary["fallback_triggered_at_5"] = not topk_hit_summary["hit_at_5"]
     
     # 判断是否匹配成功：先做阈值判定，再做边界缩放保护
     passed_by_threshold = similarity >= similarity_threshold
@@ -1128,6 +1198,12 @@ def _check_image_match_template(
                 else 0.0
             ),
             "stage_cost_ms": match_perf,
+            "topk_feasibility": topk_hit_summary,
+            "parallel_config": {
+                "enabled": scale_parallel_enabled,
+                "workers": scale_parallel_workers,
+                "chunks": scale_parallel_chunks,
+            },
         },
     }
     
