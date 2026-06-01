@@ -852,9 +852,9 @@ def _check_image_match_template(
     offscale_similarity_margin = float(payload.get("offscale_similarity_margin", 0.01))
     offscale_extra_per_unit = float(payload.get("offscale_extra_per_unit", 0.04))
     offscale_max_extra = float(payload.get("offscale_max_extra", 0.05))
-    scale_parallel_enabled = bool(payload.get("scale_parallel_enabled", False))
-    scale_parallel_workers = int(payload.get("scale_parallel_workers", 0))
-    scale_parallel_chunks = int(payload.get("scale_parallel_chunks", 0))
+    scale_parallel_enabled = bool(payload.get("scale_parallel_enabled", True))
+    scale_parallel_workers = int(payload.get("scale_parallel_workers", 4))
+    scale_parallel_chunks = int(payload.get("scale_parallel_chunks", 4))
     
     # 解析匹配方法
     match_method_str = payload.get("match_method", "TM_CCOEFF_NORMED")
