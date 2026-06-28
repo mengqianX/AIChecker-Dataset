@@ -14,6 +14,9 @@ from PIL import Image
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
 DURATION_COLUMN_CANDIDATES = [
+    "total_sec",
+    "total_s",
+    "total_ms",
     "duration_sec",
     "duration_s",
     "duration",

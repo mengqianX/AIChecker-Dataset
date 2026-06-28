@@ -13,9 +13,8 @@ from aichecker.utils import _encode
 # 仓库根目录（AIChecker/tests/regression -> AIChecker/tests -> AIChecker -> 仓库根）
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 TESTCASE_DIR = REPO_ROOT / "testcase" / "image_match"
-JSONS_DIR = TESTCASE_DIR / "jsons"
+JSONS_DIR = TESTCASE_DIR / "jsons" / "test-regression"
 EXCLUDED_PLATFORMS = {"android", "harmony"}
-EXCLUDED_CASE_DIRS = {"test-regression"}
 
 
 def _set_image_report_meta(request: pytest.FixtureRequest, **kwargs) -> None:
@@ -122,8 +121,6 @@ def _collect_testcase_jsons():
             continue
         rel = j.relative_to(JSONS_DIR)
         rel_parts_lower = [part.lower() for part in rel.parts]
-        if any(part in EXCLUDED_CASE_DIRS for part in rel_parts_lower):
-            continue
         if any(
             part == token or part.startswith(token)
             for part in rel_parts_lower
@@ -147,13 +144,6 @@ def test_image_match_from_testcase(platform: str, app_name: str, json_path: Path
         pytest.skip(f"JSON not found: {json_path}")
 
     payload = _load_and_resolve_payload(json_path)
-    payload.setdefault("timing_verbose", True)
-    payload.setdefault("timing_app", platform)
-    payload.setdefault("timing_case_id", app_name)
-    payload.setdefault(
-        "timing_csv_path",
-        str((REPO_ROOT / "reports" / "history" / "image_match" / "timing_breakdown.csv").resolve()),
-    )
     _set_image_report_meta(
         request,
         template_image=Path(payload.get("template_image", "N/A")).name,

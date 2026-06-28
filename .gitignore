@@ -41,6 +41,7 @@ Thumbs.db
 *.webp
 
 # 测试文件（测试用的图片和二进制文件）
+AIChecker/TestAgent/
 AIChecker/tests/screens/
 AIChecker/tests/jsons/
 AIChecker/tests/image_match_output/

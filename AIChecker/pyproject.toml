@@ -13,9 +13,9 @@ authors = [{ name = "xmq", email = "dev@example.com" }]
 # 这里填你项目真正依赖的库（示例）
 dependencies = [
     "Pillow>=9.0.0",
-    "opencv-python>=4.8.0",
-    "openai>=1.0.0",  # OpenAI SDK（用于调用通义千问多模态API）
-    "python-dotenv>=1.0.0",  # 支持 .env 文件加载环境变量
+    "opencv-python>=4.10.0",
+    "openai>=1.40.0",  # OpenAI SDK（用于调用兼容多模态API）
+    "python-dotenv>=1.0.1",  # 支持 .env 文件加载环境变量
 ]
 
 [project.optional-dependencies]
@@ -33,3 +33,9 @@ Repository = "https://example.com/aichecker"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["aichecker", "aichecker.*"]
+
+[tool.setuptools.package-data]
+"aichecker.vision" = [
+    "prompts/toast/*.json",
+    "prompts/toast/archive/*.json",
+]

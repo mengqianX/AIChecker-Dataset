@@ -1,5 +1,5 @@
 """
-基于 testcase/count_change 目录的测试用例，验证 TestAgent count_change 链路。
+基于 testcase/count_change 目录的测试用例，验证 vision CLI count_change 链路。
 JSON 中的路径相对于各 JSON 文件所在目录解析。
 """
 from __future__ import annotations
@@ -17,8 +17,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 TESTCASE_DIR = REPO_ROOT / "testcase" / "count_change"
 JSONS_DIR = TESTCASE_DIR / "jsons"
-TEST_AGENT_ROOT = REPO_ROOT / "AIChecker" / "TestAgent"
-TEST_AGENT_MAIN = TEST_AGENT_ROOT / "main.py"
+PROJECT_ROOT = REPO_ROOT / "AIChecker"
 REPORT_PATH_PATTERN = re.compile(r"测试报告已生成:\s*(.+)$", re.MULTILINE)
 
 
@@ -39,7 +38,7 @@ def _load_and_resolve_payload(json_path: Path) -> dict:
     for key in ("screenshot_a", "screenshot_b"):
         if data.get(key):
             data[key] = str(_resolve_path(json_path, data[key]))
-    # 让主仓库 case 能无缝走 TestAgent targeted 模式
+    # 让主仓库 case 能无缝走 vision targeted 模式
     data.setdefault("task_type", data.get("type", "count_change"))
     data.setdefault("mode", "targeted")
     return data
@@ -68,13 +67,13 @@ def _extract_expected_passed(payload: dict[str, Any], json_path: Path) -> bool:
 
 
 def _run_test_agent(payload: dict[str, Any]) -> tuple[int, str]:
-    cmd = [sys.executable, str(TEST_AGENT_MAIN), "--input-json", json.dumps(payload, ensure_ascii=False)]
+    cmd = [sys.executable, "-m", "aichecker.vision.cli", "--input-json", json.dumps(payload, ensure_ascii=False)]
     env = os.environ.copy()
     for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]:
         env.pop(key, None)
     proc = subprocess.Popen(
         cmd,
-        cwd=str(TEST_AGENT_ROOT),
+        cwd=str(PROJECT_ROOT),
         env=env,
         text=True,
         stdout=subprocess.PIPE,
@@ -119,10 +118,8 @@ def test_count_change_from_testcase(
     )
     if not json_path.exists():
         pytest.skip(f"JSON not found: {json_path}")
-    if not TEST_AGENT_MAIN.exists():
-        pytest.skip(f"TestAgent main.py not found: {TEST_AGENT_MAIN}")
     if not os.getenv("OPENAI_API_KEY"):
-        pytest.skip("OPENAI_API_KEY is required for TestAgent count_change regression tests")
+        pytest.skip("OPENAI_API_KEY is required for vision count_change regression tests")
 
     payload = _load_and_resolve_payload(json_path)
     _set_checker_report_meta(
@@ -145,7 +142,7 @@ def test_count_change_from_testcase(
     code, output = _run_test_agent(payload)
     if code != 0 and "OPENAI_API_KEY" in output:
         pytest.skip(f"{platform}/{app_name}: missing OPENAI_API_KEY")
-    assert code == 0, f"TestAgent main.py exited with code={code}\n{output}"
+    assert code == 0, f"aichecker.vision.cli exited with code={code}\n{output}"
 
     report_path = _resolve_report_path(output)
     report = json.loads(report_path.read_text(encoding="utf-8"))
