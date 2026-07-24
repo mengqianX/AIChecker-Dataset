@@ -19,7 +19,9 @@ HISTORY_DIR = REPORT_DIR / "history"
 LEGACY_RUNS_CSV = HISTORY_DIR / "test_runs.csv"
 LEGACY_RESULTS_CSV = HISTORY_DIR / "test_case_results.csv"
 DEFAULT_IMAGE_OUTPUT_ROOT = REPO_ROOT / "AIChecker" / "tests" / "image_match_output"
-SUPPORTED_CHECKERS = ("image_match", "button_color", "count_change", "progress_change")
+SUPPORTED_CHECKERS = ("image_match", "button_color", "count_change", "progress_change", "video_play")
+PAIR_IMAGE_CHECKERS = frozenset({"count_change", "progress_change"})
+NO_PREVIEW_IMAGE_CHECKERS = frozenset({"video_play"})
 ISSUE_STATUSES = {"不一致(MISMATCH)", "异常(ERROR)"}
 GOOD_STATUS = "一致(MATCH)"
 UNKNOWN_STATUSES = {"未知(UNKNOWN)", "预期未知(UNKNOWN_EXPECTED)"}
@@ -43,11 +45,18 @@ HISTORY_LABEL_PRIORITY = {
     "待确认": 8,
     "N/A": 9,
 }
+
+
+def testagent_root() -> Path:
+    return Path(os.getenv("TESTAGENT_ROOT", str(REPO_ROOT.parent / "TestAgent"))).resolve()
+
+
 CASE_JSON_ROOTS = {
     "image_match": REPO_ROOT / "testcase" / "image_match" / "jsons",
     "button_color": REPO_ROOT / "testcase" / "button_color_change" / "jsons",
     "count_change": REPO_ROOT / "testcase" / "count_change" / "jsons",
     "progress_change": REPO_ROOT / "testcase" / "progress_bar_change" / "jsons",
+    "video_play": testagent_root() / "testcase" / "video_play" / "json",
 }
 
 
@@ -84,6 +93,8 @@ def infer_checker(row: Dict[str, Any]) -> str:
         return "count_change"
     if "progress_change" in lowered or "test_progress_cases.py" in lowered:
         return "progress_change"
+    if "video_play" in lowered or "test_video_play_cases.py" in lowered:
+        return "video_play"
     return "unknown"
 
 
@@ -550,9 +561,12 @@ def repair_preview_images(rows: List[Dict[str, Any]], image_output_root: Path) -
 
         if payload is not None:
             if not row.get("preview_template_image"):
-                key = "template_image" if checker == "image_match" else "screenshot_a"
-                row["preview_template_image"] = resolve_case_image(case_file, payload.get(key, ""))
-            if not row.get("preview_target_image"):
+                if checker == "video_play":
+                    row["preview_template_image"] = resolve_case_image(case_file, payload.get("video_file", ""))
+                else:
+                    key = "template_image" if checker == "image_match" else "screenshot_a"
+                    row["preview_template_image"] = resolve_case_image(case_file, payload.get(key, ""))
+            if not row.get("preview_target_image") and checker != "video_play":
                 key = "target_image" if checker == "image_match" else "screenshot_b"
                 row["preview_target_image"] = resolve_case_image(case_file, payload.get(key, ""))
 
@@ -903,9 +917,12 @@ def issue_digest_table(rows: List[Dict[str, Any]], page_dir: Path, checker: str,
     image_headers = "<th>Template</th><th>Target</th><th>Match Result</th>"
     if checker == "button_color":
         image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
-    elif checker in {"count_change", "progress_change"}:
+    elif checker in PAIR_IMAGE_CHECKERS:
         image_headers = "<th>原图 Before</th><th>原图 After</th>"
+    elif checker in NO_PREVIEW_IMAGE_CHECKERS:
+        image_headers = ""
 
+    issue_empty_colspan = 6 if checker in NO_PREVIEW_IMAGE_CHECKERS else 10
     parts = [
         '<div class="card"><div class="section-head">'
         '<div><h2>优先关注问题</h2><p class="muted">按严重性和历史标签排序，优先把新回归和持续失败排到前面。</p></div>'
@@ -915,7 +932,7 @@ def issue_digest_table(rows: List[Dict[str, Any]], page_dir: Path, checker: str,
         f"{image_headers}</tr></thead><tbody>"
     ]
     if not bad_rows:
-        parts.append('<tr><td colspan="10">当前运行无不一致/异常</td></tr>')
+        parts.append(f'<tr><td colspan="{issue_empty_colspan}">当前运行无不一致/异常</td></tr>')
     else:
         for row in bad_rows:
             cls = status_class(str(row.get("status", "")))
@@ -933,10 +950,10 @@ def issue_digest_table(rows: List[Dict[str, Any]], page_dir: Path, checker: str,
                 parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
                 parts.append(render_image_cell(page_dir, row.get("preview_button_before_image", ""), f"{row.get('case_id', '')} button before", is_template=True))
                 parts.append(render_image_cell(page_dir, row.get("preview_button_after_image", ""), f"{row.get('case_id', '')} button after", is_template=True))
-            elif checker in {"count_change", "progress_change"}:
+            elif checker in PAIR_IMAGE_CHECKERS:
                 parts.append(render_image_cell(page_dir, row.get("preview_template_image", ""), f"{row.get('case_id', '')} before"))
                 parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
-            else:
+            elif checker not in NO_PREVIEW_IMAGE_CHECKERS:
                 parts.append(render_image_cell(page_dir, row.get("preview_template_image", ""), f"{row.get('case_id', '')} template", is_template=True))
                 parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} target"))
                 parts.append(render_image_cell(page_dir, row.get("preview_match_result_image", ""), f"{row.get('case_id', '')} match result"))
@@ -955,9 +972,12 @@ def render_detail_tables(rows: List[Dict[str, Any]], page_dir: Path, checker: st
     if checker == "button_color":
         image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
         no_data_colspan = 16
-    elif checker in {"count_change", "progress_change"}:
+    elif checker in PAIR_IMAGE_CHECKERS:
         image_headers = "<th>原图 Before</th><th>原图 After</th>"
         no_data_colspan = 14
+    elif checker in NO_PREVIEW_IMAGE_CHECKERS:
+        image_headers = ""
+        no_data_colspan = 11
 
     parts = ['<div class="card" id="all-details"><div class="section-head"><div><h2>全量明细</h2><p class="muted">问题会排在每个应用的前面，便于边筛选边比对截图。</p></div></div></div>']
     for app in sorted(grouped.keys(), key=lambda name: (-sum(1 for row in grouped[name] if is_issue_status(str(row.get("status", "")))), name.lower())):
@@ -998,10 +1018,10 @@ def render_detail_tables(rows: List[Dict[str, Any]], page_dir: Path, checker: st
                     parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
                     parts.append(render_image_cell(page_dir, row.get("preview_button_before_image", ""), f"{row.get('case_id', '')} button before", is_template=True))
                     parts.append(render_image_cell(page_dir, row.get("preview_button_after_image", ""), f"{row.get('case_id', '')} button after", is_template=True))
-                elif checker in {"count_change", "progress_change"}:
+                elif checker in PAIR_IMAGE_CHECKERS:
                     parts.append(render_image_cell(page_dir, row.get("preview_template_image", ""), f"{row.get('case_id', '')} before"))
                     parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
-                else:
+                elif checker not in NO_PREVIEW_IMAGE_CHECKERS:
                     parts.append(render_image_cell(page_dir, row.get("preview_template_image", ""), f"{row.get('case_id', '')} template", is_template=True))
                     parts.append(render_image_cell(page_dir, row.get("preview_target_image", ""), f"{row.get('case_id', '')} target"))
                     parts.append(render_image_cell(page_dir, row.get("preview_match_result_image", ""), f"{row.get('case_id', '')} match result"))
@@ -1222,8 +1242,10 @@ def write_failure_view(rows: List[Dict[str, Any]], run_meta: Dict[str, str], fai
     image_headers = "<th>Template</th><th>Target</th><th>Match Result</th>"
     if checker == "button_color":
         image_headers = "<th>原图 Before</th><th>原图 After</th><th>按钮 Before</th><th>按钮 After</th>"
-    elif checker in {"count_change", "progress_change"}:
+    elif checker in PAIR_IMAGE_CHECKERS:
         image_headers = "<th>原图 Before</th><th>原图 After</th>"
+    elif checker in NO_PREVIEW_IMAGE_CHECKERS:
+        image_headers = ""
 
     body_parts = [
         '<div class="card hero"><div class="section-head">'
@@ -1243,8 +1265,10 @@ def write_failure_view(rows: List[Dict[str, Any]], run_meta: Dict[str, str], fai
     no_data_colspan = 15
     if checker == "button_color":
         no_data_colspan = 16
-    elif checker in {"count_change", "progress_change"}:
+    elif checker in PAIR_IMAGE_CHECKERS:
         no_data_colspan = 14
+    elif checker in NO_PREVIEW_IMAGE_CHECKERS:
+        no_data_colspan = 10
 
     body_parts.append('<div class="card"><div class="section-head"><div><h2>问题明细</h2><p class="muted">默认已按新回归、持续失败、应用名称排序。</p></div></div>')
     body_parts.append('<div class="table-wrap"><table><thead><tr>'
@@ -1273,10 +1297,10 @@ def write_failure_view(rows: List[Dict[str, Any]], run_meta: Dict[str, str], fai
                 body_parts.append(render_image_cell(failure_html.parent, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
                 body_parts.append(render_image_cell(failure_html.parent, row.get("preview_button_before_image", ""), f"{row.get('case_id', '')} button before", is_template=True))
                 body_parts.append(render_image_cell(failure_html.parent, row.get("preview_button_after_image", ""), f"{row.get('case_id', '')} button after", is_template=True))
-            elif checker in {"count_change", "progress_change"}:
+            elif checker in PAIR_IMAGE_CHECKERS:
                 body_parts.append(render_image_cell(failure_html.parent, row.get("preview_template_image", ""), f"{row.get('case_id', '')} before"))
                 body_parts.append(render_image_cell(failure_html.parent, row.get("preview_target_image", ""), f"{row.get('case_id', '')} after"))
-            else:
+            elif checker not in NO_PREVIEW_IMAGE_CHECKERS:
                 body_parts.append(render_image_cell(failure_html.parent, row.get("preview_template_image", ""), f"{row.get('case_id', '')} template", is_template=True))
                 body_parts.append(render_image_cell(failure_html.parent, row.get("preview_target_image", ""), f"{row.get('case_id', '')} target"))
                 body_parts.append(render_image_cell(failure_html.parent, row.get("preview_match_result_image", ""), f"{row.get('case_id', '')} match result"))

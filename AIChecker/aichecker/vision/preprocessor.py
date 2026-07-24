@@ -236,6 +236,38 @@ class GuiPreprocessor:
             return None
         return path
 
+    def probe_bottom_snackbar(self, image_path: Path, *, band_ratio: float = 0.14) -> dict[str, Any]:
+        """检测屏幕底部是否存在 Android snackbar 风格的深色提示条。"""
+        image = self._read_image(image_path)
+        h, w = image.shape[:2]
+        band_h = max(48, int(h * band_ratio))
+        band = image[h - band_h :, :]
+        gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
+        dark = gray < 95
+        dark_ratio = float(dark.mean())
+        row_dark = dark.mean(axis=1) if dark.size else []
+        peak_row = float(max(row_dark)) if len(row_dark) else 0.0
+        col_dark = dark.mean(axis=0) if dark.size else []
+        wide_coverage = float((col_dark > 0.25).mean()) if len(col_dark) else 0.0
+        uniform_dark_scrim = dark_ratio > 0.9 and peak_row > 0.95
+        likely_snackbar = (
+            not uniform_dark_scrim and dark_ratio > 0.28 and wide_coverage > 0.45 and peak_row > 0.5
+        )
+        return {
+            "likely_snackbar": likely_snackbar,
+            "dark_ratio": round(dark_ratio, 4),
+            "wide_coverage": round(wide_coverage, 4),
+            "peak_row_dark": round(peak_row, 4),
+            "band_ratio": band_ratio,
+        }
+
+    def save_bottom_band_crop(self, image_path: Path, file_name: str, *, band_ratio: float = 0.14) -> Path | None:
+        image = self._read_image(image_path)
+        h, _w = image.shape[:2]
+        band_h = max(48, int(h * band_ratio))
+        band = image[h - band_h :, :]
+        return self._save_artifact(band, file_name)
+
     @staticmethod
     def _calc_diff_metrics(before_roi: Any, after_roi: Any) -> tuple[float, float, Any]:
         diff = cv2.absdiff(before_roi, after_roi)
@@ -353,7 +385,9 @@ class GuiPreprocessor:
         roi_center_path = self._save_artifact(center_roi, f"{suffix}_center_roi.png")
         roi_after_path = self._save_artifact(after_roi, f"{suffix}_after_roi.png")
         binary_path = self._save_artifact(binary, f"{suffix}_diff_mask.png")
-        for path in [roi_center_path, roi_after_path, binary_path]:
+        bottom_center_path = self.save_bottom_band_crop(center_image, f"{suffix}_bottom_center.png")
+        bottom_after_path = self.save_bottom_band_crop(after_image, f"{suffix}_bottom_after.png")
+        for path in [roi_center_path, roi_after_path, binary_path, bottom_center_path, bottom_after_path]:
             if path is not None:
                 out_paths.append(path)
 

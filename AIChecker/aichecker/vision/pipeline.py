@@ -8,11 +8,17 @@ from dataclasses import dataclass
 import time
 from typing import Any
 
+from aichecker.vision.baseline_health import (
+    BASELINE_TASK_TYPES,
+    VideoBaselineHealthOrchestrator,
+)
 from aichecker.vision.checkers.count_change import CountChangeDetector
 from aichecker.vision.evaluator import EvaluationResult, VisionEvaluator
 from aichecker.vision.checkers.load_failure import LoadFailurePromptDetector
 from aichecker.vision.checkers.list_refresh import ListRefreshDetector
 from aichecker.vision.checkers.loading import LoadingDetector
+from aichecker.vision.checkers.seek_playback import SeekPlaybackDetector
+from aichecker.vision.checkers.video_play import VideoPlayDetector
 from aichecker.vision.perception import ExtractedFrame
 from aichecker.vision.prompt_builders import build_prompt_for_type
 from aichecker.vision.checkers.toast import ToastMessageDetector
@@ -72,8 +78,6 @@ class CountChangeTaskDetector(BaseTaskDetector):
         task: Any,
         sampled_frames: list[ExtractedFrame],
     ) -> tuple[bool, str]:
-        if task.control_bounds is None:
-            return False, "缺少 control_bounds"
         if len(sampled_frames) < 2:
             return False, "抽帧数量不足（至少 2 帧）"
         return True, ""
@@ -241,8 +245,6 @@ class ListRefreshTaskDetector(BaseTaskDetector):
         task: Any,
         sampled_frames: list[ExtractedFrame],
     ) -> tuple[bool, str]:
-        if task.control_bounds is None:
-            return False, "缺少 control_bounds"
         if len(sampled_frames) < 2:
             return False, "抽帧数量不足（至少 2 帧）"
         return True, ""
@@ -252,8 +254,6 @@ class ListRefreshTaskDetector(BaseTaskDetector):
         task: Any,
         sampled_frames: list[ExtractedFrame],
     ) -> PipelineExecutionResult:
-        if task.control_bounds is None:
-            raise ValueError("task_type=list_refresh 时必须提供 control_bounds")
         if len(sampled_frames) < 2:
             raise ValueError("list_refresh 模式至少需要 2 帧输入")
 
@@ -270,8 +270,9 @@ class ListRefreshTaskDetector(BaseTaskDetector):
             list_result = self.detector.detect(
                 before_image=before_image_path,
                 after_image=after_image_path,
-                control_bounds=task.control_bounds,
+                target_bounds=task.control_bounds,
                 expected_list_refresh=task.expected_list_refresh,
+                expected_result_text=getattr(task, "expected_result_text", None),
                 control_name_hint=task.control_name_hint,
                 task_id=pair_task_id,
             )
@@ -285,11 +286,14 @@ class ListRefreshTaskDetector(BaseTaskDetector):
                     "after_timestamp_sec": after_meta.timestamp_sec,
                     "before_image": str(before_image_path),
                     "after_image": str(after_image_path),
+                    "result": list_result.expectation_met,
                     "bug_detected": list_result.bug_detected,
+                    "decision_basis": list_result.reason,
                     "reason": list_result.reason,
                     "raw_model_response": list_result.raw_response,
                     "selected_prompt_type": self.name,
                     "list_refreshed": list_result.list_refreshed,
+                    "still_loading": list_result.still_loading,
                     "target_region": list_result.target_region,
                     "target_region_box": list_result.target_region_box,
                     "roi_mean_abs_diff": list_result.roi_mean_abs_diff,
@@ -541,6 +545,182 @@ class LoadFailurePromptTaskDetector(BaseTaskDetector):
             video_bug_detected=result.bug_detected,
             segment_results=segment_results,
             detector_runs=[],
+        )
+
+
+class SeekPlaybackTaskDetector(BaseTaskDetector):
+    """视频 seek 后播放状态检测器。"""
+
+    name = "seek_playback_detector"
+
+    def __init__(self, detector: SeekPlaybackDetector) -> None:
+        self.detector = detector
+
+    def can_handle(self, task_type: str) -> bool:
+        return task_type in {"seek_playback", "video_seek_playback", "video_seek"}
+
+    def is_applicable(
+        self,
+        task: Any,
+        sampled_frames: list[ExtractedFrame],
+    ) -> tuple[bool, str]:
+        del task
+        if len(sampled_frames) < 2:
+            return False, "抽帧数量不足（至少 2 帧）"
+        return True, ""
+
+    def run(
+        self,
+        task: Any,
+        sampled_frames: list[ExtractedFrame],
+    ) -> PipelineExecutionResult:
+        result = self.detector.detect(
+            sampled_frames=sampled_frames,
+            task_id=task.task_id,
+            seek_timestamp_sec=getattr(task, "seek_timestamp_sec", None),
+        )
+        segment_results = [
+            {
+                "segment_index": 0,
+                "segment_task_id": f"{task.task_id}_seek_playback",
+                "before_timestamp_sec": result.seek_timestamp_sec,
+                "after_timestamp_sec": sampled_frames[-1].timestamp_sec if sampled_frames else None,
+                "before_image": None,
+                "after_image": str(sampled_frames[-1].image_path) if sampled_frames else None,
+                "result": result.result,
+                "bug_detected": result.bug_detected,
+                "reason": result.reason,
+                "decision_basis": result.decision_basis,
+                "anomaly_type": result.anomaly_type,
+                "seek_detected": result.seek_detected,
+                "seek_timestamp_sec": result.seek_timestamp_sec,
+                "seek_source": result.seek_source,
+                "raw_model_response": result.raw_response,
+                "selected_prompt_type": "seek_playback",
+                "decision_source": result.decision_source,
+                "cv_metrics": result.cv_metrics,
+                "timing": result.timing,
+            }
+        ]
+        return PipelineExecutionResult(
+            selected_detector=self.name,
+            resolved_task_intent=result.task_intent,
+            video_bug_detected=result.bug_detected,
+            segment_results=segment_results,
+            detector_runs=[],
+        )
+
+
+class VideoPlayTaskDetector(BaseTaskDetector):
+    """视频播放是否正常检测器。"""
+
+    name = "video_play_detector"
+
+    def __init__(self, detector: VideoPlayDetector) -> None:
+        self.detector = detector
+
+    def can_handle(self, task_type: str) -> bool:
+        return task_type in {"video_play", "video_playback", "video_play_check"}
+
+    def is_applicable(
+        self,
+        task: Any,
+        sampled_frames: list[ExtractedFrame],
+    ) -> tuple[bool, str]:
+        del task
+        if len(sampled_frames) < 2:
+            return False, "抽帧数量不足（至少 2 帧）"
+        return True, ""
+
+    def run(
+        self,
+        task: Any,
+        sampled_frames: list[ExtractedFrame],
+    ) -> PipelineExecutionResult:
+        result = self.detector.detect(
+            sampled_frames=sampled_frames,
+            task_id=task.task_id,
+            play_timestamp_sec=getattr(task, "play_timestamp_sec", None),
+        )
+        segment_results = [
+            {
+                "segment_index": 0,
+                "segment_task_id": f"{task.task_id}_video_play",
+                "before_timestamp_sec": result.play_timestamp_sec,
+                "after_timestamp_sec": sampled_frames[-1].timestamp_sec if sampled_frames else None,
+                "before_image": None,
+                "after_image": str(sampled_frames[-1].image_path) if sampled_frames else None,
+                "result": result.result,
+                "bug_detected": result.bug_detected,
+                "reason": result.reason,
+                "decision_basis": result.decision_basis,
+                "anomaly_type": result.anomaly_type,
+                "play_action_detected": result.play_action_detected,
+                "play_timestamp_sec": result.play_timestamp_sec,
+                "play_source": result.play_source,
+                "raw_model_response": result.raw_response,
+                "selected_prompt_type": "video_play",
+                "decision_source": result.decision_source,
+                "cv_metrics": result.cv_metrics,
+                "timing": result.timing,
+            }
+        ]
+        return PipelineExecutionResult(
+            selected_detector=self.name,
+            resolved_task_intent=result.task_intent,
+            video_bug_detected=result.bug_detected,
+            segment_results=segment_results,
+            detector_runs=[],
+        )
+
+
+class VideoBaselineHealthTaskDetector(BaseTaskDetector):
+    """视频基础健康检测编排器（4 项解耦能力串行汇总）。"""
+
+    name = "video_baseline_health_detector"
+
+    def __init__(
+        self,
+        orchestrator: VideoBaselineHealthOrchestrator,
+    ) -> None:
+        self.orchestrator = orchestrator
+
+    def can_handle(self, task_type: str) -> bool:
+        return task_type in BASELINE_TASK_TYPES
+
+    def is_applicable(
+        self,
+        task: Any,
+        sampled_frames: list[ExtractedFrame],
+    ) -> tuple[bool, str]:
+        del task
+        if len(sampled_frames) < 2:
+            return False, "抽帧数量不足（至少 2 帧）"
+        return True, ""
+
+    def run(
+        self,
+        task: Any,
+        sampled_frames: list[ExtractedFrame],
+    ) -> PipelineExecutionResult:
+        segments, summary_metrics, video_bug_detected, task_intent = self.orchestrator.run(
+            task_id=task.task_id,
+            sampled_frames=sampled_frames,
+        )
+        return PipelineExecutionResult(
+            selected_detector=self.name,
+            resolved_task_intent=task_intent,
+            video_bug_detected=video_bug_detected,
+            segment_results=segments,
+            detector_runs=[
+                {
+                    "detector": self.name,
+                    "status": "executed",
+                    "segment_count": len(segments),
+                    "bug_detected": video_bug_detected,
+                    "checks": summary_metrics.get("checks", {}),
+                }
+            ],
         )
 
 

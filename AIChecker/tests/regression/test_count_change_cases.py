@@ -4,11 +4,11 @@ JSON 中的路径相对于各 JSON 文件所在目录解析。
 """
 import json
 from pathlib import Path
-from pyexpat import model
 
 import pytest
 from aichecker.checkers import check_count_change
 from aichecker.utils import _encode
+from aichecker.vision.evaluator import resolve_vlm_backend_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 TESTCASE_DIR = REPO_ROOT / "testcase" / "count_change"
@@ -67,23 +67,16 @@ def test_count_change_from_testcase(
         target_image=Path(payload.get("screenshot_b", "N/A")).name,
     )
 
-    import os
-
-    backend = payload.get("backend") or os.getenv("COUNT_CHANGE_BACKEND") or "qwen"
-    if backend == "ui-tars":
-        base_url = payload.get("base_url") or os.getenv("UI_TARS_BASE_URL", "https://zcammjkko6k15eg7.us-east-1.aws.endpoints.huggingface.cloud/v1")
-        model = payload.get("model") or os.getenv("UI_TARS_MODEL") or "ByteDance-Seed/UI-TARS-1.5-7B"
-        api_key = payload.get("api_key") or os.getenv("UI_TARS_API_KEY")
-    elif backend == "qwen":
-        base_url = payload.get("base_url") or os.getenv("QWEN_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        model = payload.get("model") or os.getenv("QWEN_MODEL") or "qwen-vl-max"
-        api_key = payload.get("api_key") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
-    elif backend == "mai-ui":
-        base_url = payload.get("base_url") or os.getenv("MAI_UI_BASE_URL") or "https://bgkgog9p754r0x2j.us-east-1.aws.endpoints.huggingface.cloud/v1"
-        model = payload.get("model") or os.getenv("MAI_UI_MODEL") or "Tongyi-MAI/MAI-UI-8B"
-        api_key = payload.get("api_key") or os.getenv("MAI_UI_API_KEY") or os.getenv("HF_TOKEN") 
-    else:
-        pytest.skip(f"Unsupported backend: {backend}. Supported: qwen, ui-tars, mai-ui")
+    backend_config = resolve_vlm_backend_config(
+        backend=payload.get("backend"),
+        api_key=payload.get("api_key"),
+        model=payload.get("model"),
+        base_url=payload.get("base_url"),
+        default_backend="qwen",
+    )
+    api_key = backend_config.api_key
+    model = backend_config.model
+    base_url = backend_config.base_url
     bounds = payload.get("bounds", [])
     if bounds == [0, 0, 0, 0]:
         pytest.skip(f"Skipping placeholder test case: {json_path} (bounds not set)")

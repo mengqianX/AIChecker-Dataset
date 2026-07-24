@@ -136,6 +136,202 @@ class ToastMessageDetector:
         )
         return max(jaccard_2, jaccard_3) >= 0.33
 
+    _TAG_ACTION_HINTS = ("选择标签", "标签", "tag", "添加标签", "确认标签")
+    _RECYCLE_FEEDBACK_HINTS = ("回收", "回收站", "已回收", "移入回收站", "移出回收站", "归档")
+
+    @classmethod
+    def _contains_tag_action(cls, text: str) -> bool:
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return False
+        return any(hint.lower() in normalized or hint in (text or "") for hint in cls._TAG_ACTION_HINTS)
+
+    @classmethod
+    def _contains_recycle_feedback(cls, text: str) -> bool:
+        normalized = (text or "").strip()
+        if not normalized:
+            return False
+        return any(hint in normalized for hint in cls._RECYCLE_FEEDBACK_HINTS)
+
+    @classmethod
+    def _infer_expected_for_tag_action(cls, action_semantic: str) -> str:
+        if cls._contains_tag_action(action_semantic):
+            return "标签已添加"
+        return ""
+
+    def _read_snackbar_text_with_vlm(self, band_image: Path, task_id: str) -> str:
+        system_prompt = (
+            "你是移动端 UI 文本读取助手。请只读取图片中 Android snackbar/toast 深色条内的中文提示文案。"
+            "忽略“撤销”等按钮文字。只输出 JSON：{\"text\": str}。"
+        )
+        user_prompt = "请读取图中底部 snackbar/toast 条内的提示文案。"
+        try:
+            result = self.evaluator.evaluate_json(
+                before_image=band_image,
+                after_image=band_image,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                task_id=f"{task_id}_snackbar_ocr",
+                required_fields={"text": str},
+            )
+            text = str(result.parsed_json.get("text", "")).strip()
+            return text
+        except Exception as exc:  # pylint: disable=broad-except
+            if self.debug:
+                self.logger.warning("snackbar 文案读取失败: task_id=%s, err=%s", task_id, exc)
+            return ""
+
+    def _apply_snackbar_cv_fallback(
+        self,
+        *,
+        center_image: Path,
+        task_id: str,
+        segment_task_id: str,
+        toast_visible: bool,
+        toast_text: str,
+        action_semantic: str,
+        inferred_expected_toast_text: str,
+        reason: str,
+    ) -> tuple[bool, str, str, str, str]:
+        if toast_visible or self.preprocessor is None:
+            return toast_visible, toast_text, action_semantic, inferred_expected_toast_text, reason
+        try:
+            probe = self.preprocessor.probe_bottom_snackbar(center_image)
+        except Exception:  # pylint: disable=broad-except
+            return toast_visible, toast_text, action_semantic, inferred_expected_toast_text, reason
+        if not probe.get("likely_snackbar"):
+            return toast_visible, toast_text, action_semantic, inferred_expected_toast_text, reason
+
+        band_path = self.preprocessor.save_bottom_band_crop(
+            center_image,
+            f"{task_id}_snackbar_{segment_task_id}.png",
+        )
+        if band_path is None:
+            return toast_visible, toast_text, action_semantic, inferred_expected_toast_text, reason
+
+        recovered_text = self._read_snackbar_text_with_vlm(band_path, segment_task_id)
+        if not recovered_text:
+            return toast_visible, toast_text, action_semantic, inferred_expected_toast_text, reason
+
+        inferred = inferred_expected_toast_text or self._infer_expected_for_tag_action(action_semantic)
+        return (
+            True,
+            recovered_text,
+            action_semantic,
+            inferred,
+            (
+                f"{reason}（后处理修正：CV 检测到底部 snackbar，补读文案为“{recovered_text}”。）"
+            ).strip(),
+        )
+
+    @staticmethod
+    def _select_snackbar_probe_indices(
+        sampled_frames: list[ExtractedFrame],
+        selected_indices: list[int],
+        preprocessor: GuiPreprocessor | None,
+        *,
+        max_extra: int = 4,
+    ) -> list[int]:
+        if preprocessor is None:
+            return []
+        selected = set(selected_indices)
+        snackbar_hits: list[int] = []
+        for idx, frame in enumerate(sampled_frames):
+            if idx in selected:
+                continue
+            try:
+                probe = preprocessor.probe_bottom_snackbar(frame.image_path)
+            except Exception:  # pylint: disable=broad-except
+                continue
+            if probe.get("likely_snackbar"):
+                snackbar_hits.append(idx)
+
+        if not snackbar_hits:
+            return []
+
+        # 只补充最早出现的 snackbar 及其前一帧，用于建立“动作 -> 反馈”上下文。
+        first_hit = min(snackbar_hits)
+        extras = [first_hit]
+        if first_hit > 0:
+            extras.append(first_hit - 1)
+
+        deduped: list[int] = []
+        for idx in extras:
+            if idx in selected or idx in deduped:
+                continue
+            deduped.append(idx)
+        return deduped[:max_extra]
+
+    @classmethod
+    def _apply_cross_candidate_conflicts(
+        cls,
+        candidates: list[dict[str, Any]],
+        *,
+        detector: "ToastMessageDetector | None" = None,
+        task_id: str = "",
+    ) -> None:
+        tag_action_seen = any(cls._contains_tag_action(str(c.get("action_semantic", ""))) for c in candidates)
+        if not tag_action_seen or detector is None or detector.preprocessor is None:
+            return
+        for candidate in candidates:
+            action_semantic = str(candidate.get("action_semantic", ""))
+            feedback_text = " ".join(
+                [
+                    str(candidate.get("toast_text", "")),
+                    action_semantic,
+                    str(candidate.get("reason", "")),
+                ]
+            )
+            recycle_related = cls._contains_recycle_feedback(feedback_text)
+            if not recycle_related and not candidate.get("toast_text"):
+                continue
+
+            frame = candidate.get("frame")
+            if frame is None:
+                continue
+            try:
+                probe = detector.preprocessor.probe_bottom_snackbar(frame.image_path)
+            except Exception:  # pylint: disable=broad-except
+                probe = {"likely_snackbar": False}
+            if not candidate.get("toast_text") and probe.get("likely_snackbar"):
+                segment_task_id = f"{task_id}_toast_scan_{int(candidate.get('idx', 0)):04d}"
+                (
+                    toast_visible,
+                    toast_text,
+                    action_semantic,
+                    inferred_expected_toast_text,
+                    reason,
+                ) = detector._apply_snackbar_cv_fallback(
+                    center_image=frame.image_path,
+                    task_id=task_id,
+                    segment_task_id=segment_task_id,
+                    toast_visible=bool(candidate.get("toast_visible")),
+                    toast_text=str(candidate.get("toast_text", "")),
+                    action_semantic=action_semantic,
+                    inferred_expected_toast_text=str(candidate.get("inferred_expected_toast_text", "")),
+                    reason=str(candidate.get("reason", "")),
+                )
+                candidate["toast_visible"] = toast_visible
+                candidate["toast_text"] = toast_text
+                candidate["action_semantic"] = action_semantic
+                candidate["inferred_expected_toast_text"] = inferred_expected_toast_text
+                candidate["reason"] = reason
+                feedback_text = " ".join([toast_text, action_semantic, reason])
+
+            if not candidate.get("toast_text"):
+                continue
+            if not cls._contains_recycle_feedback(feedback_text):
+                continue
+            candidate["toast_visible"] = True
+            candidate["expectation_met"] = False
+            candidate["is_uncertain_action"] = False
+            if not candidate.get("inferred_expected_toast_text"):
+                candidate["inferred_expected_toast_text"] = cls._infer_expected_for_tag_action("选择标签")
+            candidate["reason"] = (
+                f"{candidate.get('reason', '')}"
+                "（后处理修正：存在标签操作上下文，但反馈为回收/归档类文案，判定为语义冲突。）"
+            ).strip()
+
     @staticmethod
     def _build_toast_image_role_labels(extra_image_paths: list[Path]) -> list[str]:
         labels = [
@@ -151,6 +347,8 @@ class ToastMessageDetector:
                 labels.append("局部ROI:候选帧toast区域裁剪")
             elif "center_roi" in name:
                 labels.append("局部ROI:后续帧同区域裁剪")
+            elif "bottom_center" in name or "bottom_after" in name:
+                labels.append("局部ROI:底部snackbar候选区域")
             elif "diff_mask" in name:
                 labels.append("辅助图:差分mask（仅用于定位，不代表语义）")
             else:
@@ -203,7 +401,86 @@ class ToastMessageDetector:
         if visible_uncertain_failures:
             return max(visible_uncertain_failures, key=_rank_key)
 
+        invisible_candidates = [c for c in candidates if not bool(c.get("toast_visible"))]
+        if invisible_candidates:
+            # 未识别 toast 时优先取更晚的候选帧，避免停留在中途弹窗态。
+            return max(
+                invisible_candidates,
+                key=lambda c: (int(c.get("idx") or 0), float(c.get("confidence") or 0.0)),
+            )
+
         return max(candidates, key=_rank_key)
+
+    @staticmethod
+    def _effective_top_k(total_candidates: int, configured_top_k: int) -> int:
+        if total_candidates <= configured_top_k:
+            return total_candidates
+        # 长录屏提高候选上限，避免 toast 出现在中后段时被 top_k 截断。
+        scaled = max(configured_top_k, (total_candidates + 11) // 12)
+        return min(scaled, 8)
+
+    @staticmethod
+    def _select_supplementary_strip_candidates(
+        candidate_scores: list[dict[str, Any]],
+        selected_indices: list[int],
+        *,
+        max_extra: int = 3,
+    ) -> list[int]:
+        """
+        补充窄条 diff_contour 候选：toast 可能在页面转场时出现，final score 会被 transition_penalty 压低。
+        """
+        extras: list[tuple[int, float, float]] = []
+        selected = set(selected_indices)
+        for item in candidate_scores:
+            idx = int(item.get("index", -1))
+            if idx < 0 or idx in selected:
+                continue
+            if str(item.get("source", "")) != "diff_contour":
+                continue
+            try:
+                aspect_ratio = float(item.get("candidate_aspect_ratio", 0.0))
+                height_ratio = float(item.get("candidate_height_ratio", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if aspect_ratio < 8.0 or height_ratio > 0.12:
+                continue
+            components = item.get("score_components") or {}
+            try:
+                weighted_base = float(components.get("weighted_base", item.get("score", 0.0)))
+            except (TypeError, ValueError):
+                weighted_base = 0.0
+            if weighted_base < 0.5:
+                continue
+            extras.append((idx, weighted_base, aspect_ratio))
+
+        extras.sort(key=lambda row: (row[1], row[2]), reverse=True)
+        return [idx for idx, _, _ in extras[:max_extra]]
+
+    @staticmethod
+    def _select_supplementary_bottom_band_candidates(
+        candidate_scores: list[dict[str, Any]],
+        selected_indices: list[int],
+        *,
+        max_extra: int = 2,
+        min_score: float = 0.65,
+    ) -> list[int]:
+        extras: list[tuple[int, float]] = []
+        selected = set(selected_indices)
+        for item in candidate_scores:
+            idx = int(item.get("index", -1))
+            if idx < 0 or idx in selected:
+                continue
+            if str(item.get("source", "")) != "high_dynamic_bottom_band":
+                continue
+            try:
+                score_value = float(item.get("score", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if score_value < min_score:
+                continue
+            extras.append((idx, score_value))
+        extras.sort(key=lambda row: row[1], reverse=True)
+        return [idx for idx, _ in extras[:max_extra]]
 
     def detect(
         self,
@@ -231,6 +508,7 @@ class ToastMessageDetector:
 
         candidate_indices = list(range(total_candidates))
         if self.enable_preprocess and self.preprocessor is not None and total_candidates > self.top_k_candidates:
+            effective_top_k = self._effective_top_k(total_candidates, self.top_k_candidates)
             t_scoring_start = time.perf_counter()
             scored: list[tuple[int, float]] = []
             for idx in candidate_indices:
@@ -269,15 +547,38 @@ class ToastMessageDetector:
 
             scored.sort(key=lambda x: x[1], reverse=True)
             candidate_scores.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
-            candidate_indices = [idx for idx, _ in scored[: self.top_k_candidates]]
-            candidate_indices.sort()
+            candidate_indices = [idx for idx, _ in scored[:effective_top_k]]
+            supplementary = self._select_supplementary_strip_candidates(
+                candidate_scores,
+                candidate_indices,
+                max_extra=min(3, self.top_k_candidates),
+            )
+            supplementary.extend(
+                self._select_supplementary_bottom_band_candidates(
+                    candidate_scores,
+                    candidate_indices + supplementary,
+                    max_extra=2,
+                )
+            )
+            if supplementary:
+                candidate_indices = sorted(set(candidate_indices + supplementary))
+            snackbar_probe = self._select_snackbar_probe_indices(
+                sampled_frames,
+                candidate_indices,
+                self.preprocessor,
+                max_extra=4,
+            )
+            if snackbar_probe:
+                candidate_indices = sorted(set(candidate_indices + snackbar_probe))
             scoring_elapsed_ms = (time.perf_counter() - t_scoring_start) * 1000.0
             if self.debug:
                 self.logger.info(
-                    "toast 候选筛选: total=%s, top_k=%s, selected=%s, elapsed=%.2fms",
+                    "toast 候选筛选: total=%s, top_k=%s, effective_top_k=%s, selected=%s, supplementary=%s, elapsed=%.2fms",
                     total_candidates,
                     self.top_k_candidates,
+                    effective_top_k,
                     candidate_indices,
+                    supplementary,
                     scoring_elapsed_ms,
                 )
 
@@ -344,10 +645,8 @@ class ToastMessageDetector:
                         "toast_evidence_from_frame23": str,
                         "reason": str,
                     },
-                    # extra_image_paths=[after.image_path] + preprocess_extra_images,
-                    extra_image_paths=[after.image_path],
-                    # image_role_labels=self._build_toast_image_role_labels([after.image_path] + preprocess_extra_images),
-                    image_role_labels=self._build_toast_image_role_labels([after.image_path]),
+                    extra_image_paths=[after.image_path] + preprocess_extra_images,
+                    image_role_labels=self._build_toast_image_role_labels([after.image_path] + preprocess_extra_images),
                 )
                 eval_elapsed_total_ms += (time.perf_counter() - t_eval_start) * 1000.0
             except Exception as exc:  # pylint: disable=broad-except
@@ -371,6 +670,8 @@ class ToastMessageDetector:
             if action_semantic_norm in {"unknown", "uncertain", "不确定", "无法确定", "未知"}:
                 expectation_unknown = True
 
+            reason = str(parsed.get("reason", ""))
+
             # 硬门控：未检测到 toast 时，不继续做文案/预期判断，降低结果抖动。
             if not toast_visible:
                 toast_text = ""
@@ -379,7 +680,6 @@ class ToastMessageDetector:
 
             semantic_equivalent = self._semantic_equivalent_toast(toast_text, inferred_expected_toast_text)
             expectation_met = raw_expectation_met or semantic_equivalent
-            reason = str(parsed.get("reason", ""))
             if reverse_inference_risk not in {"low", "high"}:
                 reverse_inference_risk = "high"
             is_uncertain_action = expectation_unknown or (reverse_inference_risk == "high")
@@ -434,6 +734,7 @@ class ToastMessageDetector:
 
             evaluated_candidates.append(candidate)
 
+        self._apply_cross_candidate_conflicts(evaluated_candidates, detector=self, task_id=task_id)
         best_candidate = self._select_final_candidate(evaluated_candidates)
 
         if best_candidate is None:

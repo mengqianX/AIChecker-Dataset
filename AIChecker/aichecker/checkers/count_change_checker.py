@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..models import Bounds, CheckResult, ControlInfo
 from ..vision.checkers.count_change import ControlBounds, CountChangeDetector
-from ..vision.evaluator import VisionEvaluator
+from ..vision.evaluator import VisionEvaluator, resolve_vlm_backend_config
 from ..vision.preprocessor import GuiPreprocessor
 
 
@@ -53,34 +52,14 @@ def _resolve_backend_config(
     model: Optional[str],
     base_url: Optional[str],
 ) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
-    resolved_backend = (backend or "qwen").strip().lower()
-    if resolved_backend == "qwen":
-        return (
-            resolved_backend,
-            api_key or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY"),
-            model or os.getenv("QWEN_MODEL") or "qwen-vl-max",
-            base_url or os.getenv("QWEN_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        )
-    if resolved_backend == "ui-tars":
-        return (
-            resolved_backend,
-            api_key or os.getenv("UI_TARS_API_KEY") or os.getenv("HF_TOKEN") or "dummy",
-            model or os.getenv("UI_TARS_MODEL") or "UI-TARS-7B-DPO",
-            base_url or os.getenv("UI_TARS_BASE_URL"),
-        )
-    if resolved_backend == "mai-ui":
-        return (
-            resolved_backend,
-            api_key or os.getenv("MAI_UI_API_KEY") or os.getenv("HF_TOKEN") or "dummy",
-            model or os.getenv("MAI_UI_MODEL") or "Tongyi-MAI/MAI-UI-8B",
-            base_url or os.getenv("MAI_UI_BASE_URL"),
-        )
-    return (
-        resolved_backend,
-        api_key or os.getenv("OPENAI_API_KEY"),
-        model or os.getenv("OPENAI_MODEL") or "gpt-4o",
-        base_url or os.getenv("OPENAI_BASE_URL"),
+    config = resolve_vlm_backend_config(
+        backend=backend,
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        default_backend="qwen",
     )
+    return config.backend, config.api_key, config.model, config.base_url
 
 
 def check_count_change(

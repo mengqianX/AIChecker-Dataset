@@ -41,19 +41,98 @@ class TokenUsageTotals:
     total_tokens: int = 0
 
 
+@dataclass(frozen=True)
+class VlmBackendConfig:
+    """Resolved OpenAI-compatible VLM backend configuration."""
+
+    backend: str
+    api_key: str | None
+    model: str
+    base_url: str | None
+
+
+def _normalize_openai_base_url(base_url: str | None) -> str | None:
+    """Normalize common model-list endpoint URLs to OpenAI-compatible API roots."""
+
+    if not base_url:
+        return base_url
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1/model"):
+        return normalized[: -len("/model")]
+    return normalized
+
+
+def resolve_vlm_backend_config(
+    *,
+    backend: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    default_backend: str = "openai",
+) -> VlmBackendConfig:
+    """Resolve VLM backend settings from explicit args and environment variables.
+
+    Supported backend env vars, in priority order:
+    AICHECKER_VLM_BACKEND, VISION_BACKEND, VLM_BACKEND, COUNT_CHANGE_BACKEND.
+    """
+
+    resolved_backend = (
+        backend
+        or os.getenv("AICHECKER_VLM_BACKEND")
+        or os.getenv("VISION_BACKEND")
+        or os.getenv("VLM_BACKEND")
+        or os.getenv("COUNT_CHANGE_BACKEND")
+        or default_backend
+    ).strip().lower()
+
+    if resolved_backend == "qwen":
+        return VlmBackendConfig(
+            backend=resolved_backend,
+            api_key=api_key or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY"),
+            model=model or os.getenv("QWEN_MODEL") or "qwen-vl-max",
+            base_url=_normalize_openai_base_url(
+                base_url or os.getenv("QWEN_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            ),
+        )
+
+    if resolved_backend == "ui-tars":
+        return VlmBackendConfig(
+            backend=resolved_backend,
+            api_key=api_key or os.getenv("UI_TARS_API_KEY") or os.getenv("HF_TOKEN") or "dummy",
+            model=model or os.getenv("UI_TARS_MODEL") or "UI-TARS-7B-DPO",
+            base_url=_normalize_openai_base_url(base_url or os.getenv("UI_TARS_BASE_URL")),
+        )
+
+    if resolved_backend == "mai-ui":
+        return VlmBackendConfig(
+            backend=resolved_backend,
+            api_key=api_key or os.getenv("MAI_UI_API_KEY") or os.getenv("HF_TOKEN") or "dummy",
+            model=model or os.getenv("MAI_UI_MODEL") or "Tongyi-MAI/MAI-UI-8B",
+            base_url=_normalize_openai_base_url(base_url or os.getenv("MAI_UI_BASE_URL")),
+        )
+
+    return VlmBackendConfig(
+        backend=resolved_backend,
+        api_key=api_key or os.getenv("OPENAI_API_KEY"),
+        model=model or os.getenv("VISION_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o",
+        base_url=_normalize_openai_base_url(base_url or os.getenv("OPENAI_BASE_URL")),
+    )
+
+
 class VisionEvaluator:
     """封装与 GPT-4o-vision 的交互逻辑。"""
 
     def __init__(
         self,
-        api_key: str,
-        model: str = "gpt-4o",
+        api_key: str | None = None,
+        model: str | None = None,
         logger: logging.Logger | None = None,
         debug: bool = False,
         log_full_data_url: bool = False,
         prompt_log_path: Path | None = None,
         prompt_text_path: Path | None = None,
         base_url: str | None = None,
+        backend: str | None = None,
     ) -> None:
         """
         初始化评估器。
@@ -68,11 +147,18 @@ class VisionEvaluator:
             prompt_text_path: 完整 Prompt 文本输出路径（单文件，.txt）。
             base_url: OpenAI-compatible API base URL.
         """
-        self.client = OpenAI(
-            api_key=api_key or os.getenv("OPENAI_API_KEY"),
-            base_url=base_url or os.getenv("OPENAI_BASE_URL"),
+        backend_config = resolve_vlm_backend_config(
+            backend=backend,
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
         )
-        self.model = model or os.getenv("OPENAI_MODEL")
+        self.backend = backend_config.backend
+        self.client = OpenAI(
+            api_key=backend_config.api_key,
+            base_url=backend_config.base_url,
+        )
+        self.model = backend_config.model
         self.logger = logger or logging.getLogger("vision_gui_agent")
         self.debug = debug
         self.log_full_data_url = log_full_data_url

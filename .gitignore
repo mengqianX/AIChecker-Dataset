@@ -59,6 +59,11 @@ AIChecker/tests/image_match_output
 AIChecker/tests/image_match_output_single_case
 AIChecker/tests/image_match_output_compare
 AIChecker/tests/image_match_output_compare/root
+.tmp_bws_frames/
+.tmp_plf_debug/
+.tmp_toast_debug/
+AIChecker/data/
+outputs/
 
 # macOS 隐藏文件
 *.DS_Store
@@ -81,3 +86,4 @@ AIChecker/aichecker/tests/regression/test_image_match_ocr_accuracy.py
 
 *.docx
 *.md
+

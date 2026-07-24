@@ -1,4 +1,4 @@
-"""内容列表刷新检测模块：判定控件触发后目标区域是否刷新。"""
+"""内容列表刷新检测模块：判定目标区域内容是否刷新。"""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ class ListRefreshResult:
     expectation_met: bool
     task_intent: str
     list_refreshed: bool
+    still_loading: bool
     target_region: str
     target_region_box: dict[str, int]
     roi_mean_abs_diff: float
@@ -35,7 +36,7 @@ class ListRefreshResult:
 
 
 class ListRefreshDetector:
-    """基于控件 bounds + 前后截图的列表刷新检测器。"""
+    """基于目标区域 bounds + 前后截图的列表刷新检测器。"""
 
     def __init__(
         self,
@@ -68,37 +69,26 @@ class ListRefreshDetector:
         return mean_abs_diff, change_ratio, diff_gray
 
     @staticmethod
-    def _infer_list_region(
+    def _resolve_target_region(
         image_width: int,
         image_height: int,
-        control_bounds: ControlBounds,
+        target_bounds: ControlBounds | None,
     ) -> tuple[dict[str, int], str]:
-        control_mid_y = control_bounds.y + (control_bounds.height / 2.0)
-        top_height = max(0, control_bounds.y)
-        bottom_height = max(0, image_height - (control_bounds.y + control_bounds.height))
+        if target_bounds is None:
+            top_margin = int(image_height * 0.10)
+            bottom_margin = int(image_height * 0.10)
+            return (
+                {"x1": 0, "y1": top_margin, "x2": image_width, "y2": image_height - bottom_margin},
+                "主内容区域（未提供目标区域 bounds，自动退化）",
+            )
 
-        if control_mid_y <= image_height * 0.45:
-            direction = "below"
-        elif control_mid_y >= image_height * 0.65:
-            direction = "above"
-        else:
-            direction = "below" if bottom_height >= top_height else "above"
-
-        if direction == "below":
-            y1 = min(image_height - 1, max(0, control_bounds.y + control_bounds.height))
-            y2 = image_height
-            region_desc = "控件下方列表区域"
-        else:
-            y1 = 0
-            y2 = max(1, min(image_height, control_bounds.y))
-            region_desc = "控件上方列表区域"
-
-        # 兜底：推断区域过小则退化为全屏（避免误切导致证据不足）。
-        if y2 - y1 < max(40, int(image_height * 0.15)):
-            y1, y2 = 0, image_height
-            region_desc = "全屏内容区域（推断列表区域过小，自动退化）"
-
-        return {"x1": 0, "y1": y1, "x2": image_width, "y2": y2}, region_desc
+        x1 = max(0, min(image_width - 1, int(target_bounds.x)))
+        y1 = max(0, min(image_height - 1, int(target_bounds.y)))
+        x2 = max(1, min(image_width, int(target_bounds.x + target_bounds.width)))
+        y2 = max(1, min(image_height, int(target_bounds.y + target_bounds.height)))
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError(f"目标区域 bounds 超出图片范围或面积无效: {target_bounds}")
+        return {"x1": x1, "y1": y1, "x2": x2, "y2": y2}, "目标区域 bounds 指定的内容区域"
 
     def _save_roi_artifacts(
         self,
@@ -125,15 +115,17 @@ class ListRefreshDetector:
         self,
         before_image: Path,
         after_image: Path,
-        control_bounds: ControlBounds,
+        target_bounds: ControlBounds | None,
         expected_list_refresh: bool = True,
+        expected_result_text: str | None = None,
         control_name_hint: str | None = None,
         task_id: str = "list_refresh_task",
     ) -> ListRefreshResult:
-        """检测列表区域在控件响应后是否发生刷新。"""
+        """检测目标区域在控件响应后是否发生刷新。"""
         if not before_image.exists() or not after_image.exists():
             raise FileNotFoundError("输入前后页面截图不存在")
-        control_bounds.validate()
+        if target_bounds is not None:
+            target_bounds.validate()
         detect_start = time.perf_counter()
 
         before = self._read_image(before_image)
@@ -142,10 +134,10 @@ class ListRefreshDetector:
         if after.shape[:2] != (h, w):
             raise ValueError("前后截图分辨率不一致，无法执行列表刷新检测")
 
-        list_region, list_region_desc = self._infer_list_region(
+        list_region, list_region_desc = self._resolve_target_region(
             image_width=w,
             image_height=h,
-            control_bounds=control_bounds,
+            target_bounds=target_bounds,
         )
         x1, y1, x2, y2 = list_region["x1"], list_region["y1"], list_region["x2"], list_region["y2"]
         before_roi = before[y1:y2, x1:x2]
@@ -170,11 +162,12 @@ class ListRefreshDetector:
             task_type="list_refresh",
             context={
                 "expected_list_refresh": expected_list_refresh,
+                "expected_result_text": expected_result_text or "未提供",
                 "control_name_hint": control_name_hint or "未提供",
-                "control_bounds_x": control_bounds.x,
-                "control_bounds_y": control_bounds.y,
-                "control_bounds_width": control_bounds.width,
-                "control_bounds_height": control_bounds.height,
+                "target_bounds_x": target_bounds.x if target_bounds else None,
+                "target_bounds_y": target_bounds.y if target_bounds else None,
+                "target_bounds_width": target_bounds.width if target_bounds else None,
+                "target_bounds_height": target_bounds.height if target_bounds else None,
                 "preprocess_summary": preprocess_summary,
                 "preprocess_structured": preprocess_structured,
             },
@@ -196,6 +189,7 @@ class ListRefreshDetector:
             task_id=task_id,
             required_fields={
                 "list_refreshed": bool,
+                "still_loading": bool,
                 "target_region": str,
                 "reason": str,
             },
@@ -204,11 +198,12 @@ class ListRefreshDetector:
         vlm_elapsed_ms = (time.perf_counter() - t_vlm_start) * 1000.0
         parsed = eval_result.parsed_json
         list_refreshed = bool(parsed.get("list_refreshed", False))
+        still_loading = bool(parsed.get("still_loading", False))
         expectation_met_raw = parsed.get("expectation_met")
         expectation_met = (
             bool(expectation_met_raw)
             if isinstance(expectation_met_raw, bool)
-            else (list_refreshed == bool(expected_list_refresh))
+            else ((list_refreshed == bool(expected_list_refresh)) and not still_loading)
         )
         bug_detected = not expectation_met
 
@@ -217,6 +212,7 @@ class ListRefreshDetector:
             expectation_met=expectation_met,
             task_intent=prompt_pack.task_intent,
             list_refreshed=list_refreshed,
+            still_loading=still_loading,
             target_region=str(parsed.get("target_region", list_region_desc)),
             target_region_box=list_region,
             roi_mean_abs_diff=round(roi_mean_abs_diff, 3),

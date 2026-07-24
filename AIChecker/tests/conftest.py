@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import csv
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
+
+_REGRESSION_DIR = Path(__file__).resolve().parent / "regression"
+if str(_REGRESSION_DIR) not in sys.path:
+    sys.path.insert(0, str(_REGRESSION_DIR))
 
 # 加载 .env 文件中的环境变量（如果存在）
 try:
@@ -108,6 +113,18 @@ def _checker_from_test_path(test_path: str) -> str | None:
         return "count_change"
     if "test_progress_cases.py" in test_path:
         return "progress_change"
+    if "test_black_white_screen_cases.py" in test_path:
+        return "black_white_screen"
+    if "test_no_response_cases.py" in test_path:
+        return "no_response"
+    if "test_long_loading_cases.py" in test_path:
+        return "long_loading"
+    if "test_page_load_failure_cases.py" in test_path:
+        return "page_load_failure"
+    if "test_toast_cases.py" in test_path:
+        return "toast"
+    if "test_video_play_cases.py" in test_path:
+        return "video_play"
     return None
 
 

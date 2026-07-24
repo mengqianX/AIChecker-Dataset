@@ -159,7 +159,7 @@ def resolve_backend_config(
         return base_url, model, api_key
 
     elif backend == "mai-ui":
-        base_url = base_url or os.getenv("MAI_UI_BASE_URL", "https://bgkgog9p754r0x2j.us-east-1.aws.endpoints.huggingface.cloud/v1")
+        base_url = base_url or os.getenv("MAI_UI_BASE_URL", "https://notebook-inspire.sii.edu.cn/ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6/project-36ace45a-ca9d-4038-a1ee-31005934c852/user-9cf8e66e-8726-42ab-9eeb-3a458295c571/vscode/86a2108b-57cd-4e9d-8b5b-c0b5ae5cb45a/6af74476-37cd-47bb-98dd-7eeca5cba313/proxy/8000/v1")
         model = model or os.getenv("MAI_UI_MODEL", "Tongyi-MAI/MAI-UI-8B")
         api_key = api_key or os.getenv("MAI_UI_API_KEY") or os.getenv("HF_TOKEN", "dummy")
         return base_url, model, api_key

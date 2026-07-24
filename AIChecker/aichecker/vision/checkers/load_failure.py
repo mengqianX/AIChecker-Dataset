@@ -35,6 +35,13 @@ class LoadFailureDetectionResult:
 class LoadFailurePromptDetector:
     """检测控件响应后是否出现加载失败相关提示或弹窗。"""
 
+    _TEXT_FAILURE_TYPES: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("network_error", ("网络异常", "网络错误", "网络不给力", "网络连接", "network")),
+        ("request_failed", ("请求失败", "加载失败", "获取失败", "访问失败", "失败", "error")),
+        ("timeout", ("超时", "timeout", "timed out")),
+        ("permission_denied", ("权限", "无权限", "permission", "denied", "unauthorized")),
+    )
+
     def __init__(
         self,
         evaluator: VisionEvaluator,
@@ -111,6 +118,208 @@ class LoadFailurePromptDetector:
             filtered = prefilter_scores[: self.probe_force_keep]
         return [int(item["index"]) for item in filtered[: self.probe_top_k]]
 
+    def _detect_persistent_visual_failure(self, sampled_frames: list[Any]) -> dict[str, Any]:
+        """Detect sustained blank/black tail states that VLMs often describe inconsistently."""
+
+        tail_count = min(3, len(sampled_frames))
+        if tail_count < 2:
+            return {"detected": False, "failure_type": "none", "reason": "", "tail_metrics": []}
+
+        first_gray = self._read_gray_image(sampled_frames[0].image_path)
+        tail_metrics: list[dict[str, Any]] = []
+        for idx in range(len(sampled_frames) - tail_count, len(sampled_frames)):
+            gray = self._read_gray_image(sampled_frames[idx].image_path)
+            edges = cv2.Canny(gray, 50, 150)
+            edge_ratio = cv2.countNonZero(edges) / max(1, gray.shape[0] * gray.shape[1])
+            change_ratio = self._calc_change_ratio(first_gray, gray)
+            tail_metrics.append(
+                {
+                    "index": idx,
+                    "timestamp_sec": sampled_frames[idx].timestamp_sec,
+                    "mean": round(float(gray.mean()), 2),
+                    "std": round(float(gray.std()), 2),
+                    "edge_ratio": round(float(edge_ratio), 4),
+                    "initial_change_ratio": round(float(change_ratio), 4),
+                }
+            )
+
+        white_tail = all(
+            item["mean"] >= 240.0
+            and item["std"] <= 16.0
+            and item["edge_ratio"] <= 0.006
+            and item["initial_change_ratio"] >= 0.12
+            for item in tail_metrics
+        )
+        if white_tail:
+            return {
+                "detected": True,
+                "failure_type": "persistent_blank",
+                "reason": "尾部连续帧为低纹理高亮白屏，且相对首帧变化明显，判定为持续空白加载失败态。",
+                "tail_metrics": tail_metrics,
+            }
+
+        skeleton_tail = all(
+            210.0 <= item["mean"] <= 235.0
+            and item["std"] >= 45.0
+            and item["edge_ratio"] <= 0.015
+            and item["initial_change_ratio"] >= 0.40
+            for item in tail_metrics
+        )
+        if skeleton_tail:
+            return {
+                "detected": True,
+                "failure_type": "persistent_skeleton",
+                "reason": "尾部连续帧为低边缘骨架占位态，且相对首帧变化明显，判定为持续骨架屏加载失败态。",
+                "tail_metrics": tail_metrics,
+            }
+
+        black_tail = all(
+            item["mean"] <= 35.0
+            and item["edge_ratio"] <= 0.015
+            and item["initial_change_ratio"] >= 0.50
+            for item in tail_metrics
+        )
+        if black_tail:
+            return {
+                "detected": True,
+                "failure_type": "black_screen",
+                "reason": "尾部连续帧为低亮度低边缘黑屏，且相对首帧变化明显，判定为持续黑屏加载失败态。",
+                "tail_metrics": tail_metrics,
+            }
+
+        return {"detected": False, "failure_type": "none", "reason": "", "tail_metrics": tail_metrics}
+
+    @classmethod
+    def _classify_failure_text(cls, text: str) -> str:
+        normalized = text.strip().lower()
+        if not normalized:
+            return "none"
+        for failure_type, keywords in cls._TEXT_FAILURE_TYPES:
+            if any(keyword in normalized for keyword in keywords):
+                return failure_type
+        return "none"
+
+    @staticmethod
+    def _text_says_recovered_or_normal(text: str) -> bool:
+        normalized = text.strip().lower()
+        if not normalized:
+            return False
+        markers = (
+            "未出现加载失败",
+            "未发现加载失败",
+            "未见加载失败",
+            "无加载失败",
+            "未出现明确的失败",
+            "未见明确失败",
+            "未发现明确失败",
+            "已恢复",
+            "恢复出可用业务内容",
+            "页面内容已恢复",
+            "显示可用业务内容",
+            "内容完整",
+        )
+        return any(marker in normalized for marker in markers)
+
+    def _normalize_probe_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Convert VLM observations into detector-owned failure decisions."""
+
+        observation_text = "\n".join(
+            [
+                str(result.get("evidence_text", "")),
+                str(result.get("reason", "")),
+            ]
+        )
+        failure_text_visible = bool(result.get("failure_text_visible"))
+        page_recovered = bool(result.get("page_recovered"))
+        text_failure_type = self._classify_failure_text(str(result.get("evidence_text", "")))
+        if text_failure_type == "none" and failure_text_visible:
+            text_failure_type = self._classify_failure_text(observation_text)
+        text_says_normal = self._text_says_recovered_or_normal(observation_text)
+
+        normalized_load_failed = text_failure_type != "none" and not page_recovered
+        normalized_failure_type = text_failure_type if normalized_load_failed else "none"
+        normalization_reason = (
+            f"VLM 观察文本命中失败语义，归一化为 {normalized_failure_type}。"
+            if normalized_load_failed
+            else "VLM 观察文本未命中明确失败语义，归一化为 none。"
+        )
+        if page_recovered and text_failure_type != "none":
+            normalization_reason = "VLM 观察到后帧已恢复业务内容，按短暂加载/提示处理，归一化为 none。"
+
+        legacy_model_load_failed = result.get("model_load_failed")
+        legacy_model_failure_type = str(result.get("model_failure_type", "unknown")).strip().lower() or "unknown"
+        inconsistent_output = False
+        if legacy_model_load_failed is not None:
+            inconsistent_output = bool(legacy_model_load_failed) != normalized_load_failed
+        if legacy_model_failure_type not in {"unknown", normalized_failure_type}:
+            inconsistent_output = True
+        if text_says_normal and legacy_model_load_failed is True:
+            inconsistent_output = True
+
+        normalized = dict(result)
+        normalized.update(
+            {
+                "load_failed": normalized_load_failed,
+                "failure_type": normalized_failure_type,
+                "normalization_reason": normalization_reason,
+                "inconsistent_output": inconsistent_output,
+                "text_says_normal": text_says_normal,
+                "text_failure_type": text_failure_type,
+            }
+        )
+        return normalized
+
+    @staticmethod
+    def _bool_from_parsed(parsed: dict[str, Any], key: str, default: bool = False) -> bool:
+        value = parsed.get(key)
+        return value if isinstance(value, bool) else default
+
+    def _coerce_probe_observation(
+        self,
+        parsed: dict[str, Any],
+        raw_response: str,
+        candidate_index: int,
+        before_ts: float,
+        center_ts: float,
+        after_ts: float,
+    ) -> dict[str, Any]:
+        """Coerce new observation schema, with backward compatibility for old probe JSON."""
+
+        evidence_text = str(parsed.get("evidence_text", ""))
+        reason = str(parsed.get("reason", ""))
+        confidence_raw = parsed.get("confidence")
+        confidence = float(confidence_raw) if isinstance(confidence_raw, (int, float)) else None
+
+        has_new_schema = "failure_text_visible" in parsed or "page_recovered" in parsed or "visual_state" in parsed
+        legacy_load_failed = parsed.get("load_failed") if isinstance(parsed.get("load_failed"), bool) else None
+        legacy_failure_type = str(parsed.get("failure_type", "unknown")).strip().lower() or "unknown"
+
+        failure_text_visible = self._bool_from_parsed(parsed, "failure_text_visible", False)
+        if not has_new_schema and legacy_load_failed is not None:
+            failure_text_visible = bool(legacy_load_failed) and self._classify_failure_text(
+                f"{evidence_text}\n{reason}"
+            ) != "none"
+
+        page_recovered = self._bool_from_parsed(parsed, "page_recovered", False)
+        visual_state = str(parsed.get("visual_state", "unknown")).strip().lower() or "unknown"
+
+        return {
+            "candidate_index": candidate_index,
+            "before_ts": before_ts,
+            "center_ts": center_ts,
+            "after_ts": after_ts,
+            "failure_text_visible": failure_text_visible,
+            "evidence_text": evidence_text,
+            "page_recovered": page_recovered,
+            "visual_state": visual_state,
+            "reason": reason,
+            "confidence": confidence,
+            "raw_response": raw_response,
+            "schema_version": "observation_v1" if has_new_schema else "legacy_decision_v0",
+            "model_load_failed": legacy_load_failed,
+            "model_failure_type": legacy_failure_type,
+        }
+
     def _run_probe(
         self,
         before_image: Path,
@@ -125,7 +334,7 @@ class LoadFailurePromptDetector:
         prompt_pack = build_loading_failure_probe_prompt(
             context={
                 "before_timestamp_sec": before_ts,
-                "after_timestamp_sec": center_ts,
+                "after_timestamp_sec": after_ts,
             }
         )
         probe_result = self.evaluator.evaluate_json(
@@ -135,8 +344,6 @@ class LoadFailurePromptDetector:
             system_prompt=prompt_pack.system_prompt,
             user_prompt=prompt_pack.user_prompt,
             required_fields={
-                "load_failed": bool,
-                "failure_type": str,
                 "evidence_text": str,
                 "reason": str,
             },
@@ -147,21 +354,14 @@ class LoadFailurePromptDetector:
                 "图3:候选后帧（验证提示是否短暂出现或持续存在）",
             ],
         )
-        parsed = probe_result.parsed_json
-        confidence_raw = parsed.get("confidence")
-        confidence = float(confidence_raw) if isinstance(confidence_raw, (int, float)) else None
-        return {
-            "candidate_index": candidate_index,
-            "before_ts": before_ts,
-            "center_ts": center_ts,
-            "after_ts": after_ts,
-            "load_failed": bool(parsed["load_failed"]),
-            "failure_type": str(parsed.get("failure_type", "unknown")).strip().lower() or "unknown",
-            "evidence_text": str(parsed.get("evidence_text", "")),
-            "reason": str(parsed.get("reason", "")),
-            "confidence": confidence,
-            "raw_response": probe_result.raw_response,
-        }
+        return self._coerce_probe_observation(
+            parsed=probe_result.parsed_json,
+            raw_response=probe_result.raw_response,
+            candidate_index=candidate_index,
+            before_ts=before_ts,
+            center_ts=center_ts,
+            after_ts=after_ts,
+        )
 
     def detect(self, sampled_frames: list[Any], task_id: str) -> LoadFailureDetectionResult:
         """扫描少量候选帧，判断是否出现加载失败提示或弹窗。"""
@@ -172,9 +372,11 @@ class LoadFailurePromptDetector:
         candidate_indices = self._build_candidate_indices(sampled_frames)
         prefilter_scores = self._score_candidates(sampled_frames, candidate_indices)
         probe_indices = self._select_probe_indices(prefilter_scores)
+        visual_failure = self._detect_persistent_visual_failure(sampled_frames)
 
         hits: list[dict[str, Any]] = []
         all_results: list[dict[str, Any]] = []
+        probe_errors: list[dict[str, Any]] = []
         raw_parts: list[str] = []
         t_vlm_start = time.perf_counter()
         for idx in probe_indices:
@@ -183,16 +385,35 @@ class LoadFailurePromptDetector:
             before_frame = sampled_frames[before_idx]
             center_frame = sampled_frames[idx]
             after_frame = sampled_frames[after_idx]
-            result = self._run_probe(
-                before_image=before_frame.image_path,
-                center_image=center_frame.image_path,
-                after_image=after_frame.image_path,
-                before_ts=before_frame.timestamp_sec,
-                center_ts=center_frame.timestamp_sec,
-                after_ts=after_frame.timestamp_sec,
-                task_id=task_id,
-                candidate_index=idx,
-            )
+            try:
+                result = self._run_probe(
+                    before_image=before_frame.image_path,
+                    center_image=center_frame.image_path,
+                    after_image=after_frame.image_path,
+                    before_ts=before_frame.timestamp_sec,
+                    center_ts=center_frame.timestamp_sec,
+                    after_ts=after_frame.timestamp_sec,
+                    task_id=task_id,
+                    candidate_index=idx,
+                )
+            except Exception as exc:
+                error_result = {
+                    "candidate_index": idx,
+                    "before_ts": before_frame.timestamp_sec,
+                    "center_ts": center_frame.timestamp_sec,
+                    "after_ts": after_frame.timestamp_sec,
+                    "error": str(exc),
+                }
+                probe_errors.append(error_result)
+                raw_parts.append(f"[load_failure_probe_idx_{idx:04d}_error]\n{exc}")
+                self.logger.warning(
+                    "加载失败候选帧 VLM 输出无效，跳过该候选: task_id=%s, idx=%s, error=%s",
+                    task_id,
+                    idx,
+                    exc,
+                )
+                continue
+            result = self._normalize_probe_result(result)
             all_results.append(result)
             raw_parts.append(f"[load_failure_probe_idx_{idx:04d}]\n{result['raw_response']}")
             if result["load_failed"]:
@@ -210,23 +431,56 @@ class LoadFailurePromptDetector:
                 reverse=True,
             )[0]
 
-        bug_detected = best_hit is not None
-        failure_type = best_hit["failure_type"] if best_hit else "none"
+        recovery_after_hit = None
+        if best_hit is not None and not bool(visual_failure.get("detected")):
+            later_non_failure_results = [
+                item
+                for item in all_results
+                if int(item["candidate_index"]) > int(best_hit["candidate_index"]) and not bool(item["load_failed"])
+            ]
+            if later_non_failure_results:
+                recovery_after_hit = sorted(
+                    later_non_failure_results,
+                    key=lambda item: (int(item["candidate_index"]), float(item["center_ts"])),
+                    reverse=True,
+                )[0]
+                best_hit = None
+
+        visual_failure_detected = bool(visual_failure.get("detected"))
+        bug_detected = best_hit is not None or visual_failure_detected
+        failure_type = (
+            best_hit["failure_type"]
+            if best_hit
+            else str(visual_failure.get("failure_type", "none") if visual_failure_detected else "none")
+        )
         evidence_text = best_hit["evidence_text"] if best_hit else ""
         confidence = best_hit["confidence"] if best_hit else None
         reason = (
             f"页面加载失败提示命中：{best_hit['reason']}（证据文案：{evidence_text}，候选帧={best_hit['candidate_index']}）"
             if best_hit
-            else "未在候选帧中发现明确的加载失败提示或失败弹窗。"
+            else (
+                str(visual_failure.get("reason", ""))
+                if visual_failure_detected
+                else (
+                    "候选帧曾出现加载态，但后续候选帧已恢复业务内容，按短暂加载过程处理。"
+                    if recovery_after_hit
+                    else "未在候选帧中发现明确的加载失败提示或失败弹窗。"
+                )
+            )
         )
         cv_metrics = {
             "candidate_indices": candidate_indices,
             "probe_indices": probe_indices,
             "prefilter_scores": prefilter_scores,
             "scan_count": len(all_results),
+            "probe_error_count": len(probe_errors),
+            "probe_errors": probe_errors,
             "hit_count": len(hits),
             "hits": hits,
             "best_hit": best_hit,
+            "recovery_after_hit": recovery_after_hit,
+            "visual_failure": visual_failure,
+            "inconsistent_probe_count": len([item for item in all_results if item.get("inconsistent_output")]),
         }
 
         return LoadFailureDetectionResult(

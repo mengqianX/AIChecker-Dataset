@@ -17,10 +17,13 @@ except ImportError:  # pragma: no cover - optional convenience dependency
     load_dotenv = None  # type: ignore[assignment]
 
 from aichecker.vision.checkers.count_change import ControlBounds, CountChangeDetector
-from aichecker.vision.evaluator import VisionEvaluator
+from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_backend_config
 from aichecker.vision.checkers.load_failure import LoadFailurePromptDetector
 from aichecker.vision.checkers.list_refresh import ListRefreshDetector
 from aichecker.vision.checkers.loading import LoadingDetector
+from aichecker.vision.checkers.seek_playback import SeekPlaybackDetector
+from aichecker.vision.checkers.video_play import VideoPlayDetector
+from aichecker.vision.baseline_health import BASELINE_TASK_TYPES, VideoBaselineHealthOrchestrator
 from aichecker.vision.pipeline import (
     CountChangeTaskDetector,
     FramePairTaskDetector,
@@ -28,7 +31,10 @@ from aichecker.vision.pipeline import (
     ListRefreshTaskDetector,
     LoadingTaskDetector,
     PipelineOrchestrator,
+    SeekPlaybackTaskDetector,
     ToastTaskDetector,
+    VideoBaselineHealthTaskDetector,
+    VideoPlayTaskDetector,
 )
 from aichecker.vision.perception import ExtractedFrame, FrameExtractor
 from aichecker.vision.preprocessor import GuiPreprocessor
@@ -57,6 +63,9 @@ class VideoTaskInput:
     source_base_dir: Path | None = None
     expected_toast_keywords: list[str] | None = None
     expected_list_refresh: bool = True
+    expected_result_text: str | None = None
+    seek_timestamp_sec: float | None = None
+    play_timestamp_sec: float | None = None
 
 
 @dataclass
@@ -98,34 +107,63 @@ def parse_args() -> RunOptions:
 
 def _resolve_expected_change(payload: dict[str, Any]) -> str:
     """
-    兼容 expected_count_change 与 expected_passed 两种写法。
-    expected_passed=True -> any_change；False -> no_change。
+    解析数量变化业务预期。
+    expected_passed 是测试集标注字段，不参与线上任务语义解析。
     """
     if payload.get("expected_count_change") is not None:
         return str(payload["expected_count_change"])
-    if payload.get("expected_passed") is not None:
-        return "any_change" if bool(payload["expected_passed"]) else "no_change"
     return "any_change"
+
+
+def _resolve_expected_result_text(payload: dict[str, Any]) -> str | None:
+    """读取自然语言预期结果。"""
+    for key in ("expected_result", "expected_result_text", "expectation", "expected_behavior"):
+        value = payload.get(key)
+        if value not in ("", None):
+            return str(value)
+    return None
 
 
 def _resolve_expected_list_refresh(payload: dict[str, Any]) -> bool:
     """
-    兼容 expected_list_refresh 与 expected_passed 两种写法。
-    expected_passed=True -> 期望列表刷新；False -> 期望不刷新。
+    解析列表刷新业务预期。
+    expected_passed 是测试集标注字段，不参与线上任务语义解析。
     """
     if payload.get("expected_list_refresh") is not None:
         return bool(payload["expected_list_refresh"])
-    if payload.get("expected_passed") is not None:
-        return bool(payload["expected_passed"])
+    expected_text = _resolve_expected_result_text(payload)
+    if expected_text:
+        lowered = expected_text.strip().lower()
+        negative_markers = (
+            "不刷新",
+            "不要刷新",
+            "无需刷新",
+            "不应刷新",
+            "不发生刷新",
+            "保持不变",
+            "no refresh",
+            "not refresh",
+            "should not refresh",
+        )
+        if any(marker in lowered for marker in negative_markers):
+            return False
     return True
 
 
 def _parse_bounds(payload: dict[str, Any]) -> ControlBounds | None:
     """
-    兼容两种 bounds 输入：
-    1) control_bounds: {x,y,width,height}
-    2) bounds: [x1,y1,x2,y2]
+    兼容 bounds 输入：
+    1) target_region_bounds: {x,y,width,height} 或 [x1,y1,x2,y2]
+    2) control_bounds: {x,y,width,height}
+    3) bounds: [x1,y1,x2,y2] 或 {x,y,width,height}
     """
+    if payload.get("target_region_bounds") is not None:
+        bounds_raw = payload["target_region_bounds"]
+        if isinstance(bounds_raw, list):
+            return ControlBounds.from_list(bounds_raw)
+        if isinstance(bounds_raw, dict):
+            return ControlBounds.from_payload(bounds_raw)
+        raise ValueError(f"不支持的 target_region_bounds 类型: {type(bounds_raw)}")
     if payload.get("control_bounds") is not None:
         return ControlBounds.from_payload(payload["control_bounds"])
     if payload.get("bounds") is not None:
@@ -140,10 +178,20 @@ def _parse_bounds(payload: dict[str, Any]) -> ControlBounds | None:
 
 def parse_task_from_payload(payload: dict[str, Any], base_dir: Path | None = None) -> VideoTaskInput:
     """将 JSON payload 转为强类型任务对象。"""
-    mode = str(payload.get("mode", "full")).strip().lower()
+    task_type = str(payload.get("task_type", payload.get("type", payload.get("prompt_type", "general")))).strip().lower()
+    targeted_task_types = {
+        "list_refresh",
+        "seek_playback",
+        "video_seek_playback",
+        "video_seek",
+        "video_play",
+        "video_playback",
+        "video_play_check",
+    } | set(BASELINE_TASK_TYPES)
+    default_mode = "targeted" if task_type in targeted_task_types else "full"
+    mode = str(payload.get("mode", default_mode)).strip().lower()
     if mode not in {"full", "targeted"}:
         raise ValueError(f"mode 仅支持 full/targeted，当前为: {mode}")
-    task_type = str(payload.get("task_type", payload.get("type", payload.get("prompt_type", "general")))).strip().lower()
     task_type_scope = payload.get("task_type_scope")
     normalized_scope: list[str] | None = None
     if task_type_scope is not None:
@@ -156,24 +204,39 @@ def parse_task_from_payload(payload: dict[str, Any], base_dir: Path | None = Non
     after_image = payload.get("after_image", payload.get("screenshot_b"))
     missing: list[str] = []
     if mode == "targeted":
-        if task_type in {"count_change", "list_refresh"}:
+        if task_type == "count_change":
             if before_image in ("", None):
                 missing.append("before_image|screenshot_a")
             if after_image in ("", None):
                 missing.append("after_image|screenshot_b")
             if payload.get("control_bounds") is None and payload.get("bounds") is None:
                 missing.append("control_bounds|bounds")
+        elif task_type == "list_refresh":
+            if before_image in ("", None):
+                missing.append("before_image|screenshot_a")
+            if after_image in ("", None):
+                missing.append("after_image|screenshot_b")
         else:
             if payload.get("video_file") in ("", None):
                 missing.append("video_file")
     else:
         has_video = payload.get("video_file") not in ("", None)
+        if task_type == "list_refresh":
+            if before_image in ("", None):
+                missing.append("before_image|screenshot_a")
+            if after_image in ("", None):
+                missing.append("after_image|screenshot_b")
         has_count_pair = (
             before_image not in ("", None)
             and after_image not in ("", None)
-            and (payload.get("control_bounds") is not None or payload.get("bounds") is not None)
+            and (
+                task_type == "list_refresh"
+                or payload.get("target_region_bounds") is not None
+                or payload.get("control_bounds") is not None
+                or payload.get("bounds") is not None
+            )
         )
-        if not has_video and not has_count_pair:
+        if task_type != "list_refresh" and not has_video and not has_count_pair:
             missing.append("video_file 或 (before_image+after_image+bounds/control_bounds)")
     if missing:
         raise ValueError(f"mode={mode}, task_type={task_type} 时输入 JSON 缺少必填字段: {missing}")
@@ -186,7 +249,12 @@ def parse_task_from_payload(payload: dict[str, Any], base_dir: Path | None = Non
         video_file=str(payload["video_file"]) if payload.get("video_file") else None,
         before_image=str(before_image) if before_image else None,
         after_image=str(after_image) if after_image else None,
-        sample_interval_sec=float(payload.get("sample_interval_sec", 1.0)),
+        sample_interval_sec=float(
+            payload.get(
+                "sample_interval_sec",
+                0.5 if task_type in {"seek_playback", "video_seek_playback", "video_seek"} else 1.0,
+            )
+        ),
         start_sec=float(payload.get("start_sec", 0.0)),
         end_sec=float(payload["end_sec"]) if payload.get("end_sec") is not None else None,
         control_bounds=_parse_bounds(payload),
@@ -204,6 +272,25 @@ def parse_task_from_payload(payload: dict[str, Any], base_dir: Path | None = Non
             else ([str(x) for x in payload.get("toast_keywords", [])] if payload.get("toast_keywords") else None)
         ),
         expected_list_refresh=_resolve_expected_list_refresh(payload),
+        expected_result_text=_resolve_expected_result_text(payload),
+        seek_timestamp_sec=(
+            float(payload["seek_timestamp_sec"])
+            if payload.get("seek_timestamp_sec") is not None
+            else (
+                float(payload["seek_time_sec"])
+                if payload.get("seek_time_sec") is not None
+                else None
+            )
+        ),
+        play_timestamp_sec=(
+            float(payload["play_timestamp_sec"])
+            if payload.get("play_timestamp_sec") is not None
+            else (
+                float(payload["play_time_sec"])
+                if payload.get("play_time_sec") is not None
+                else None
+            )
+        ),
     )
 
 
@@ -295,10 +382,15 @@ def run() -> None:
     logger.info("vision_gui_agent 启动")
     logger.info("本次运行输出根目录: %s", output_root)
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise EnvironmentError("未读取到 OPENAI_API_KEY。请检查 .env 或当前终端环境变量。")
-    model_name = os.getenv("VISION_MODEL") or os.getenv("OPENAI_MODEL", "gpt-4o")
+    backend_config = resolve_vlm_backend_config()
+    if not backend_config.api_key:
+        raise EnvironmentError("未读取到 VLM API key。请检查 .env 或当前终端环境变量。")
+    logger.info(
+        "VLM backend: backend=%s, model=%s, base_url=%s",
+        backend_config.backend,
+        backend_config.model,
+        backend_config.base_url or "",
+    )
     debug_enabled = os.getenv("VGA_DEBUG", "1").strip() in {"1", "true", "True", "YES", "yes"}
     log_full_data_url = os.getenv("VGA_LOG_FULL_DATA_URL", "0").strip() in {"1", "true", "True", "YES", "yes"}
     enable_preprocess = os.getenv("VGA_ENABLE_PREPROCESS", "1").strip() in {"1", "true", "True", "YES", "yes"}
@@ -344,8 +436,10 @@ def run() -> None:
     crop_min_area_ratio = float(os.getenv("VGA_CROP_MIN_AREA_RATIO", "0.10"))
 
     evaluator = VisionEvaluator(
-        api_key=api_key,
-        model=model_name,
+        api_key=backend_config.api_key,
+        model=backend_config.model,
+        base_url=backend_config.base_url,
+        backend=backend_config.backend,
         logger=logger,
         debug=debug_enabled,
         log_full_data_url=log_full_data_url,
@@ -408,6 +502,16 @@ def run() -> None:
         evaluator=evaluator,
         logger=logger,
         debug=debug_enabled,
+    )
+    seek_playback_detector = SeekPlaybackDetector(
+        logger=logger,
+    )
+    video_play_detector = VideoPlayDetector(
+        logger=logger,
+    )
+    baseline_health_orchestrator = VideoBaselineHealthOrchestrator(
+        loading_detector=loading_detector,
+        load_failure_detector=load_failure_detector,
     )
     load_failure_detector = LoadFailurePromptDetector(
         evaluator=evaluator,
@@ -531,6 +635,9 @@ def run() -> None:
             CountChangeTaskDetector(detector=count_change_detector, logger=logger),
             ListRefreshTaskDetector(detector=list_refresh_detector, logger=logger),
             ToastTaskDetector(detector=toast_detector),
+            SeekPlaybackTaskDetector(detector=seek_playback_detector),
+            VideoPlayTaskDetector(detector=video_play_detector),
+            VideoBaselineHealthTaskDetector(orchestrator=baseline_health_orchestrator),
             LoadingTaskDetector(detector=loading_detector),
             LoadFailurePromptTaskDetector(detector=load_failure_detector),
             FramePairTaskDetector(evaluator=evaluator, logger=logger),
@@ -573,11 +680,23 @@ def run() -> None:
                 if task.control_bounds
                 else None
             ),
+            "target_region_bounds": (
+                {
+                    "x": task.control_bounds.x,
+                    "y": task.control_bounds.y,
+                    "width": task.control_bounds.width,
+                    "height": task.control_bounds.height,
+                }
+                if task.task_type == "list_refresh" and task.control_bounds
+                else None
+            ),
             "expected_count_change": task.expected_count_change,
             "metric_hints": task.metric_hints,
             "control_name_hint": task.control_name_hint,
             "expected_toast_keywords": task.expected_toast_keywords,
             "expected_list_refresh": task.expected_list_refresh,
+            "expected_result_text": task.expected_result_text,
+            "seek_timestamp_sec": task.seek_timestamp_sec,
         },
         "video_level_result": {
             "bug_detected": video_bug_detected,

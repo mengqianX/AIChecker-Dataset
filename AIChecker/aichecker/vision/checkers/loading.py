@@ -9,8 +9,10 @@ import time
 from typing import Any
 
 import cv2
+import numpy as np
 
 from aichecker.vision.evaluator import VisionEvaluator
+from aichecker.vision.motion_noise import MotionNoiseAnalyzer
 from aichecker.vision.prompt_builders import build_prompt_for_type
 
 
@@ -46,7 +48,20 @@ class LoadingDetector:
         cv_black_white_tail_window: int = 5,
         cv_black_white_min_consecutive: int = 3,
         cv_black_white_min_window_ratio: float = 0.6,
+        cv_garbled_min_consecutive: int = 2,
+        cv_garbled_band_top_ratio: float = 0.35,
+        cv_garbled_band_bottom_ratio: float = 0.55,
+        cv_noise_garble_block_std: float = 6.0,
+        cv_noise_garble_residual: float = 3.5,
+        cv_noise_garble_block_std_high: float = 8.0,
+        cv_localized_garble_block: int = 16,
+        cv_localized_garble_resid_threshold: float = 12.0,
+        cv_localized_garble_rnd_cluster: int = 150,
+        cv_localized_garble_pure_cluster: int = 180,
+        cv_localized_garble_min_frames: int = 1,
         cv_min_long_loading_duration_sec: float = 5.0,
+        enable_motion_noise_mask: bool = True,
+        motion_noise_analyzer: MotionNoiseAnalyzer | None = None,
     ) -> None:
         self.evaluator = evaluator
         self.logger = logger or logging.getLogger("vision_gui_agent")
@@ -59,7 +74,24 @@ class LoadingDetector:
         self.cv_black_white_tail_window = max(1, int(cv_black_white_tail_window))
         self.cv_black_white_min_consecutive = max(1, int(cv_black_white_min_consecutive))
         self.cv_black_white_min_window_ratio = max(0.0, min(1.0, float(cv_black_white_min_window_ratio)))
+        self.cv_garbled_min_consecutive = max(1, int(cv_garbled_min_consecutive))
+        self.cv_garbled_band_top_ratio = max(0.0, min(1.0, float(cv_garbled_band_top_ratio)))
+        self.cv_garbled_band_bottom_ratio = max(0.0, min(1.0, float(cv_garbled_band_bottom_ratio)))
+        if self.cv_garbled_band_bottom_ratio <= self.cv_garbled_band_top_ratio:
+            self.cv_garbled_band_bottom_ratio = min(1.0, self.cv_garbled_band_top_ratio + 0.2)
+        self.cv_noise_garble_block_std = max(0.0, float(cv_noise_garble_block_std))
+        self.cv_noise_garble_residual = max(0.0, float(cv_noise_garble_residual))
+        self.cv_noise_garble_block_std_high = max(
+            self.cv_noise_garble_block_std, float(cv_noise_garble_block_std_high)
+        )
+        self.cv_localized_garble_block = max(8, int(cv_localized_garble_block))
+        self.cv_localized_garble_resid_threshold = max(0.0, float(cv_localized_garble_resid_threshold))
+        self.cv_localized_garble_rnd_cluster = max(1, int(cv_localized_garble_rnd_cluster))
+        self.cv_localized_garble_pure_cluster = max(1, int(cv_localized_garble_pure_cluster))
+        self.cv_localized_garble_min_frames = max(1, int(cv_localized_garble_min_frames))
         self.cv_min_long_loading_duration_sec = max(0.0, float(cv_min_long_loading_duration_sec))
+        self.enable_motion_noise_mask = bool(enable_motion_noise_mask)
+        self.motion_noise_analyzer = motion_noise_analyzer or MotionNoiseAnalyzer()
 
     @staticmethod
     def _read_gray_image(path: Path) -> Any:
@@ -67,6 +99,13 @@ class LoadingDetector:
         if image is None:
             raise RuntimeError(f"无法读取图片: {path}")
         return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    @staticmethod
+    def _read_color_image(path: Path) -> Any:
+        image = cv2.imread(str(path))
+        if image is None:
+            raise RuntimeError(f"无法读取图片: {path}")
+        return image
 
     @staticmethod
     def _calc_change_ratio(gray_a: Any, gray_b: Any, threshold: int = 22) -> float:
@@ -84,6 +123,29 @@ class LoadingDetector:
         variance = sum((x - mean) ** 2 for x in ratios) / len(ratios)
         std = variance**0.5
         return {"mean": mean, "max": max(ratios), "min": min(ratios), "std": std}
+
+    @staticmethod
+    def _longest_run_at_or_below(ratios: list[float], threshold: float) -> tuple[int, int, int]:
+        """Return longest consecutive run with ratio <= threshold as (length, start, end)."""
+        best_len = 0
+        best_start = -1
+        best_end = -1
+        current_len = 0
+        current_start = 0
+
+        for idx, ratio in enumerate(ratios):
+            if ratio <= threshold:
+                if current_len == 0:
+                    current_start = idx
+                current_len += 1
+                if current_len > best_len:
+                    best_len = current_len
+                    best_start = current_start
+                    best_end = idx
+            else:
+                current_len = 0
+
+        return best_len, best_start, best_end
 
     def _build_stage_metrics(self, sampled_frames: list[Any], ratios: list[float]) -> dict[str, Any]:
         total_frames = len(sampled_frames)
@@ -132,9 +194,178 @@ class LoadingDetector:
             "white_ratio": white_pixels / total,
         }
 
+    def _calc_garbled_screen_stats(self, gray: Any) -> dict[str, float | bool]:
+        """
+        识别局部花屏/乱码：文本带内多行同时高方差，且水平边缘密度异常偏低。
+        """
+        h, w = gray.shape[:2]
+        y0 = int(h * self.cv_garbled_band_top_ratio)
+        y1 = int(h * self.cv_garbled_band_bottom_ratio)
+        if y1 <= y0 + 8 or w < 32:
+            return {
+                "garbled_match": False,
+                "noisy_rows": 0.0,
+                "row_osc": 0.0,
+                "hdiff_mean": 0.0,
+                "text_band_p50": 0.0,
+                "text_band_p90": 0.0,
+                "text_band_max": 0.0,
+            }
+
+        band = gray[y0:y1, :]
+        row_stds = band.std(axis=1)
+        noisy_rows = float((row_stds > 35.0).mean())
+        row_osc = float(np.abs(np.diff(band.mean(axis=1))).mean())
+        hdiff_mean = float(np.abs(band[:, 1:].astype(np.int16) - band[:, :-1].astype(np.int16)).mean())
+
+        block_size = 16
+        block_stds: list[float] = []
+        for y in range(y0, y1 - block_size, block_size):
+            for x in range(0, w - block_size, block_size):
+                block_stds.append(float(gray[y : y + block_size, x : x + block_size].std()))
+
+        if block_stds:
+            bs_arr = np.array(block_stds, dtype=np.float64)
+            p50 = float(np.percentile(bs_arr, 50))
+            p90 = float(np.percentile(bs_arr, 90))
+            mx = float(bs_arr.max())
+        else:
+            p50 = p90 = mx = 0.0
+
+        garbled_match = (
+            noisy_rows >= 0.85
+            and mx >= 90.0
+            and p90 >= 35.0
+            and hdiff_mean <= 3.0
+            and row_osc <= 1.5
+        )
+        return {
+            "garbled_match": garbled_match,
+            "noisy_rows": noisy_rows,
+            "row_osc": row_osc,
+            "hdiff_mean": hdiff_mean,
+            "text_band_p50": p50,
+            "text_band_p90": p90,
+            "text_band_max": mx,
+        }
+
+    def _calc_noise_garble_stats(self, gray: Any) -> dict[str, float | bool]:
+        """
+        识别全屏花屏：包含颗粒噪声/雪花点（含 RGB 通道错位）以及撕裂/重影条纹。
+        两类异常都会破坏本应平坦的区域，使分块标准差中位数显著升高；
+        噪点类还伴随较高的中值滤波残差。
+        """
+        h, w = gray.shape[:2]
+        if h < 16 or w < 16:
+            return {
+                "noise_garble_match": False,
+                "noise_residual": 0.0,
+                "median_block_std": 0.0,
+            }
+
+        gray_u8 = gray.astype(np.uint8)
+        median = cv2.medianBlur(gray_u8, 3).astype(np.float32)
+        noise_residual = float(np.abs(gray.astype(np.float32) - median).mean())
+
+        block_size = 8
+        hh = (h // block_size) * block_size
+        ww = (w // block_size) * block_size
+        blocks = (
+            gray[:hh, :ww]
+            .astype(np.float32)
+            .reshape(hh // block_size, block_size, ww // block_size, block_size)
+            .transpose(0, 2, 1, 3)
+            .reshape(-1, block_size * block_size)
+        )
+        median_block_std = float(np.median(blocks.std(axis=1)))
+
+        # 强撕裂/重影或强噪点：平坦区中位方差本身就异常高。
+        # 弱噪点：中位方差偏高，且中值残差（高频雪花）明显。
+        noise_garble_match = median_block_std >= self.cv_noise_garble_block_std_high or (
+            median_block_std >= self.cv_noise_garble_block_std
+            and noise_residual >= self.cv_noise_garble_residual
+        )
+        return {
+            "noise_garble_match": noise_garble_match,
+            "noise_residual": noise_residual,
+            "median_block_std": median_block_std,
+        }
+
+    @staticmethod
+    def _largest_block_cluster(block_mask: Any) -> int:
+        """在块级布尔掩码上求最大 4-连通连通域的块数。"""
+        mask = block_mask.astype(np.uint8)
+        if int(mask.sum()) == 0:
+            return 0
+        num, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
+        if num <= 1:
+            return 0
+        return int(stats[1:, cv2.CC_STAT_AREA].max())
+
+    def _calc_localized_garble_stats(self, bgr: Any) -> dict[str, float | bool]:
+        """
+        识别局部块状花屏：画面整体正常，但某一矩形区域坏成随机雪花或纯原色彩条。
+        - 随机雪花：中值滤波残差在局部聚成大团（结构化照片会被中值滤波保留，残差小）。
+        - 纯原色彩条：完全饱和的原色/间色（纯红/绿/蓝/青/黄/品红）块聚成大团，
+          正常 UI/照片几乎不会出现如此大片的纯色簇。
+        """
+        h, w = bgr.shape[:2]
+        bs = self.cv_localized_garble_block
+        if h < bs * 2 or w < bs * 2:
+            return {
+                "localized_garble_match": False,
+                "rnd_noise_cluster": 0.0,
+                "pure_color_cluster": 0.0,
+            }
+
+        channels = cv2.split(bgr.astype(np.int16))
+        b_ch, g_ch, r_ch = channels[0], channels[1], channels[2]
+        max_ch = np.maximum(np.maximum(r_ch, g_ch), b_ch)
+        min_ch = np.minimum(np.minimum(r_ch, g_ch), b_ch)
+        pure = ((max_ch >= 225) & (min_ch <= 45)).astype(np.float32)
+
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        residual = cv2.absdiff(gray, cv2.medianBlur(gray, 3)).astype(np.float32)
+
+        hh = (h // bs) * bs
+        ww = (w // bs) * bs
+        rows = hh // bs
+        cols = ww // bs
+
+        def _block_mean(arr: Any) -> Any:
+            return arr[:hh, :ww].reshape(rows, bs, cols, bs).mean(axis=(1, 3))
+
+        pure_block_mask = _block_mean(pure) > 0.5
+        rnd_block_mask = _block_mean(residual) > self.cv_localized_garble_resid_threshold
+
+        rnd_cluster = self._largest_block_cluster(rnd_block_mask)
+        pure_cluster = self._largest_block_cluster(pure_block_mask)
+
+        localized_garble_match = (
+            rnd_cluster >= self.cv_localized_garble_rnd_cluster
+            or pure_cluster >= self.cv_localized_garble_pure_cluster
+        )
+        return {
+            "localized_garble_match": localized_garble_match,
+            "rnd_noise_cluster": float(rnd_cluster),
+            "pure_color_cluster": float(pure_cluster),
+        }
+
+    @staticmethod
+    def _max_consecutive_true(flags: list[bool]) -> int:
+        best = 0
+        current = 0
+        for flag in flags:
+            if flag:
+                current += 1
+                best = max(best, current)
+            else:
+                current = 0
+        return best
+
     def _detect_black_white_screen(self, sampled_frames: list[Any]) -> tuple[str | None, str, dict[str, Any]]:
         """
-        识别黑/白屏异常。只在末尾窗口持续命中时判定，避免把单帧转场误报为异常。
+        识别黑/白屏与花屏异常。黑/白屏只在末尾窗口持续命中时判定；花屏扫描全段帧并要求连续命中。
         """
         tail_window = min(len(sampled_frames), self.cv_black_white_tail_window)
         required_consecutive = min(tail_window, self.cv_black_white_min_consecutive)
@@ -195,6 +426,73 @@ class LoadingDetector:
             and white_window_ratio >= self.cv_black_white_min_window_ratio
         ):
             return "white_screen", "CV判定末尾窗口持续为近纯白画面，疑似白屏异常。", metrics
+
+        garbled_frame_stats: list[dict[str, Any]] = []
+        garbled_flags: list[bool] = []
+        localized_flags: list[bool] = []
+        for frame_idx, frame in enumerate(sampled_frames):
+            color = self._read_color_image(frame.image_path)
+            gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
+            band_stats = self._calc_garbled_screen_stats(gray)
+            noise_stats = self._calc_noise_garble_stats(gray)
+            localized_stats = self._calc_localized_garble_stats(color)
+            band_match = bool(band_stats["garbled_match"])
+            noise_match = bool(noise_stats["noise_garble_match"])
+            localized_match = bool(localized_stats["localized_garble_match"])
+            garbled_match = band_match or noise_match
+            garbled_flags.append(garbled_match)
+            localized_flags.append(localized_match)
+            garbled_frame_stats.append(
+                {
+                    "frame_index": frame_idx,
+                    "timestamp_sec": float(getattr(frame, "timestamp_sec", 0.0)),
+                    "garbled_match": garbled_match or localized_match,
+                    "band_match": band_match,
+                    "noise_match": noise_match,
+                    "localized_match": localized_match,
+                    **{k: v for k, v in band_stats.items() if k != "garbled_match"},
+                    **{k: v for k, v in noise_stats.items() if k != "noise_garble_match"},
+                    **{k: v for k, v in localized_stats.items() if k != "localized_garble_match"},
+                }
+            )
+
+        garbled_max_consecutive = self._max_consecutive_true(garbled_flags)
+        garbled_match_count = sum(1 for flag in garbled_flags if flag)
+        band_match_count = sum(1 for item in garbled_frame_stats if item.get("band_match"))
+        noise_match_count = sum(1 for item in garbled_frame_stats if item.get("noise_match"))
+        localized_match_count = sum(1 for flag in localized_flags if flag)
+        garbled_metrics: dict[str, Any] = {
+            "required_consecutive": self.cv_garbled_min_consecutive,
+            "garbled_match_count": garbled_match_count,
+            "garbled_max_consecutive": garbled_max_consecutive,
+            "band_match_count": band_match_count,
+            "noise_match_count": noise_match_count,
+            "localized_match_count": localized_match_count,
+            "localized_min_frames": self.cv_localized_garble_min_frames,
+            "garbled_band_top_ratio": self.cv_garbled_band_top_ratio,
+            "garbled_band_bottom_ratio": self.cv_garbled_band_bottom_ratio,
+            "noise_garble_block_std_threshold": self.cv_noise_garble_block_std,
+            "noise_garble_residual_threshold": self.cv_noise_garble_residual,
+            "noise_garble_block_std_high_threshold": self.cv_noise_garble_block_std_high,
+            "localized_rnd_cluster_threshold": self.cv_localized_garble_rnd_cluster,
+            "localized_pure_cluster_threshold": self.cv_localized_garble_pure_cluster,
+            "frames": garbled_frame_stats,
+        }
+        metrics["garbled"] = garbled_metrics
+
+        # 局部块状花屏：区域坏得足够大且足够罕见，允许单帧命中（往往是一闪而过）。
+        if localized_match_count >= self.cv_localized_garble_min_frames:
+            return (
+                "garbled_screen",
+                "CV判定画面局部出现大块随机雪花或纯色彩条，疑似局部渲染/解码花屏。",
+                metrics,
+            )
+        if garbled_max_consecutive >= self.cv_garbled_min_consecutive:
+            if noise_match_count >= band_match_count:
+                reason = "CV判定画面出现持续全屏噪点/雪花花屏（含通道错位），疑似渲染或解码异常。"
+            else:
+                reason = "CV判定画面中部文本区域出现持续花屏/乱码条纹，疑似渲染异常。"
+            return "garbled_screen", reason, metrics
         return None, "", metrics
 
     def _cv_decide(
@@ -216,19 +514,45 @@ class LoadingDetector:
         max_ratio = float(stats["max"])
         std_ratio = float(stats["std"])
 
-        if max_ratio >= self.cv_clear_progress_max_threshold:
-            return (
-                False,
-                "CV判定存在明显页面变化，未见持续加载卡死特征。",
-                "none",
-                metrics,
-            )
-
         if mean_ratio <= self.cv_static_mean_threshold and max_ratio <= self.cv_static_max_threshold:
             return (
                 True,
                 "CV判定页面长时间近乎静止，疑似加载无反馈/卡住。",
                 "no_response",
+                metrics,
+            )
+
+        low_run_len, low_run_start, low_run_end = self._longest_run_at_or_below(
+            ratios,
+            self.cv_spinner_mean_upper,
+        )
+        if duration_sec is not None and ratios:
+            seconds_per_transition = duration_sec / max(1, len(ratios))
+            low_run_duration_sec = low_run_len * seconds_per_transition
+        else:
+            seconds_per_transition = None
+            low_run_duration_sec = None
+        metrics["longest_low_change_run"] = {
+            "threshold": self.cv_spinner_mean_upper,
+            "transition_count": low_run_len,
+            "start_transition_index": low_run_start,
+            "end_transition_index": low_run_end,
+            "estimated_duration_sec": low_run_duration_sec,
+            "seconds_per_transition": seconds_per_transition,
+        }
+        if low_run_duration_sec is not None and low_run_duration_sec > self.cv_min_long_loading_duration_sec:
+            return (
+                True,
+                "CV判定存在持续小幅规律变化的低变化区间，疑似加载态长时间停留。",
+                "long_loading",
+                metrics,
+            )
+
+        if max_ratio >= self.cv_clear_progress_max_threshold:
+            return (
+                False,
+                "CV判定存在明显页面变化，未见持续加载卡死特征。",
+                "none",
                 metrics,
             )
 
@@ -273,6 +597,7 @@ class LoadingDetector:
         priority = [
             "black_screen",
             "white_screen",
+            "garbled_screen",
             "no_response",
             "long_loading",
             "unknown",
@@ -324,11 +649,34 @@ class LoadingDetector:
             raise ValueError("loading 检测至少需要 2 帧")
         t_start = time.perf_counter()
 
-        ratios: list[float] = []
+        raw_ratios: list[float] = []
         for idx in range(len(sampled_frames) - 1):
             gray_a = self._read_gray_image(sampled_frames[idx].image_path)
             gray_b = self._read_gray_image(sampled_frames[idx + 1].image_path)
-            ratios.append(self._calc_change_ratio(gray_a, gray_b))
+            raw_ratios.append(self._calc_change_ratio(gray_a, gray_b))
+
+        ratios = raw_ratios
+        motion_noise_metrics: dict[str, Any] = {
+            "enabled": self.enable_motion_noise_mask,
+            "has_dynamic_noise": False,
+            "reason": "disabled" if not self.enable_motion_noise_mask else "not_run",
+        }
+        raw_stage_metrics = self._build_stage_metrics(sampled_frames, raw_ratios)
+        if self.enable_motion_noise_mask:
+            try:
+                motion_result = self.motion_noise_analyzer.analyze(sampled_frames)
+                motion_noise_metrics = motion_result.metrics_dict()
+                motion_noise_metrics["raw_change_ratios"] = motion_result.raw_change_ratios
+                motion_noise_metrics["masked_change_ratios"] = motion_result.masked_change_ratios
+                if motion_result.has_dynamic_noise:
+                    ratios = motion_result.masked_change_ratios
+            except Exception as exc:  # pragma: no cover - defensive fallback for corrupt frames
+                motion_noise_metrics = {
+                    "enabled": True,
+                    "has_dynamic_noise": False,
+                    "reason": "analysis_error",
+                    "error": str(exc),
+                }
 
         stage_metrics = self._build_stage_metrics(sampled_frames, ratios)
         screen_anomaly_type, screen_reason, screen_metrics = self._detect_black_white_screen(sampled_frames)
@@ -336,8 +684,12 @@ class LoadingDetector:
             ratios,
             duration_sec=float(stage_metrics["duration_sec"]),
         )
+        cv_metrics["frame_change_ratios_raw"] = raw_ratios
+        cv_metrics["raw_change_stats"] = self._build_stats(raw_ratios)
+        cv_metrics["motion_noise"] = motion_noise_metrics
         cv_metrics["screen_stats"] = screen_metrics
         cv_metrics["stages"] = stage_metrics
+        cv_metrics["raw_stages"] = raw_stage_metrics
         cv_metrics["signals"] = {
             "no_response": {
                 "detected": cv_result is True and cv_anomaly_type == "no_response",
@@ -358,9 +710,15 @@ class LoadingDetector:
                 },
             },
             "black_white_screen": {
-                "detected": screen_anomaly_type in {"black_screen", "white_screen"},
-                "status": "detected" if screen_anomaly_type in {"black_screen", "white_screen"} else "not_detected",
-                "source": "cv_tail_window",
+                "detected": screen_anomaly_type in {"black_screen", "white_screen", "garbled_screen"},
+                "status": (
+                    "detected"
+                    if screen_anomaly_type in {"black_screen", "white_screen", "garbled_screen"}
+                    else "not_detected"
+                ),
+                "source": "cv_tail_window" if screen_anomaly_type in {"black_screen", "white_screen"} else (
+                    "cv_garbled_scan" if screen_anomaly_type == "garbled_screen" else "cv_tail_window"
+                ),
                 "anomaly_type": screen_anomaly_type or "none",
                 "reason": screen_reason,
                 "evidence": screen_metrics,
@@ -500,6 +858,7 @@ class LoadingDetector:
             if bool(fallback_result["bug_detected"]) and fallback_anomaly_type in {
                 "black_screen",
                 "white_screen",
+                "garbled_screen",
                 "no_response",
                 "long_loading",
                 "unknown",
