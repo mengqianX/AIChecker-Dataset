@@ -509,10 +509,6 @@ def run() -> None:
     video_play_detector = VideoPlayDetector(
         logger=logger,
     )
-    baseline_health_orchestrator = VideoBaselineHealthOrchestrator(
-        loading_detector=loading_detector,
-        load_failure_detector=load_failure_detector,
-    )
     load_failure_detector = LoadFailurePromptDetector(
         evaluator=evaluator,
         logger=logger,
@@ -520,6 +516,10 @@ def run() -> None:
         probe_top_k=loading_failure_probe_top_k,
         probe_min_cv_score=loading_failure_probe_min_cv_score,
         probe_force_keep=loading_failure_probe_force_keep,
+    )
+    baseline_health_orchestrator = VideoBaselineHealthOrchestrator(
+        loading_detector=loading_detector,
+        load_failure_detector=load_failure_detector,
     )
     extractor = FrameExtractor(
         auto_crop_black_borders=auto_crop_black_borders,

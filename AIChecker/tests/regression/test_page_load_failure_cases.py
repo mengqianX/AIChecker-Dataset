@@ -20,6 +20,7 @@ from testagent_case_utils import (
     extract_expected_passed,
     extract_video_frames,
     load_case,
+    record_evaluator_token_usage,
     require_testagent_root,
     set_checker_report_meta,
 )
@@ -79,7 +80,9 @@ def test_page_load_failure_from_testagent_case(case_json_path: Path, request: py
         request,
         actual_passed=actual_passed,
         anomaly_type=result.anomaly_type,
+        detect_elapsed_ms=(result.timing or {}).get("detect_elapsed_ms", ""),
     )
+    record_evaluator_token_usage(request, detector.evaluator)
 
     assert actual_passed == expected_passed, (
         f"{case_json_path.name}: expected_passed={expected_passed}, actual_passed={actual_passed}, "

@@ -68,17 +68,120 @@ def calc_counts(rows: Iterable[dict[str, str]]) -> dict[str, int]:
     return counts
 
 
-def safe_div(numerator: int, denominator: int) -> float:
+def safe_div(numerator: float, denominator: float) -> float:
     if denominator == 0:
         return 0.0
     return numerator / denominator
+
+
+def _as_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(value: object) -> int:
+    if value is None or value == "":
+        return 0
+    try:
+        return int(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def calc_runtime_token_stats(rows: list[dict[str, str]]) -> dict[str, float | int]:
+    executed = [r for r in rows if str(r.get("actual_passed", "")) != "跳过(SKIPPED)"]
+    skipped_count = len(rows) - len(executed)
+    durations = [_as_float(r.get("duration_sec")) for r in executed]
+    durations_f = [d for d in durations if d is not None]
+    total_duration = sum(durations_f)
+    avg_duration = safe_div(total_duration, len(durations_f))
+
+    total_prompt_calls = sum(_as_int(r.get("prompt_call_count")) for r in executed)
+    total_prompt_tokens = sum(_as_int(r.get("prompt_tokens")) for r in executed)
+    total_completion_tokens = sum(_as_int(r.get("completion_tokens")) for r in executed)
+    total_tokens = sum(_as_int(r.get("total_tokens")) for r in executed)
+    cases_with_llm = sum(1 for r in executed if _as_int(r.get("prompt_call_count")) > 0)
+
+    return {
+        "case_count": len(rows),
+        "executed_count": len(executed),
+        "skipped_count": skipped_count,
+        "total_duration_sec": round(total_duration, 3),
+        "avg_duration_sec": round(avg_duration, 3),
+        "total_prompt_calls": total_prompt_calls,
+        "cases_with_llm": cases_with_llm,
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+        "total_tokens": total_tokens,
+        "avg_tokens_per_case": round(safe_div(total_tokens, len(executed)), 2),
+        "avg_tokens_per_llm_case": round(safe_div(total_tokens, cases_with_llm), 2),
+    }
+
+
+def print_metrics_for_rows(csv_path: Path, target_rows: list[dict[str, str]], run_id: str) -> None:
+    counts = calc_counts(target_rows)
+    tp = counts["tp"]
+    fp = counts["fp"]
+    tn = counts["tn"]
+    fn = counts["fn"]
+    excluded = counts["excluded"]
+    precision = safe_div(tp, tp + fp)
+    recall = safe_div(tp, tp + fn)
+    match_rate = safe_div(tp + tn, tp + fp + tn + fn)
+    runtime = calc_runtime_token_stats(target_rows)
+
+    print(f"CSV: {csv_path}")
+    print(f"run_id: {run_id}")
+    print(f"rows_used: {len(target_rows)}")
+    print(f"excluded_rows(no expected/actual pass-fail): {excluded}")
+    print("-" * 48)
+    print(f"TP: {tp}")
+    print(f"FP: {fp}")
+    print(f"TN: {tn}")
+    print(f"FN: {fn}")
+    print("-" * 48)
+    print(f"pass_rate(match): {match_rate:.4f} ({match_rate * 100:.2f}%)")
+    print(f"precision: {precision:.4f} ({precision * 100:.2f}%)")
+    print(f"recall: {recall:.4f} ({recall * 100:.2f}%)")
+    print("-" * 48)
+    print(f"executed/skipped: {runtime['executed_count']}/{runtime['skipped_count']}")
+    print(f"total_duration_sec: {runtime['total_duration_sec']}")
+    print(f"avg_duration_sec: {runtime['avg_duration_sec']}")
+    print(f"cases_with_llm: {runtime['cases_with_llm']}")
+    print(f"total_prompt_calls: {runtime['total_prompt_calls']}")
+    print(
+        "tokens(prompt/completion/total): "
+        f"{runtime['total_prompt_tokens']}/"
+        f"{runtime['total_completion_tokens']}/"
+        f"{runtime['total_tokens']}"
+    )
+    print(
+        f"avg_tokens_per_llm_case(单条用例token,仅LLM): {runtime['avg_tokens_per_llm_case']}"
+    )
+    print(
+        f"avg_tokens_per_case(摊薄到全部执行用例): {runtime['avg_tokens_per_case']}"
+    )
+
+
+def list_checkers(history_root: Path) -> list[str]:
+    if not history_root.exists():
+        return []
+    checkers = []
+    for path in sorted(history_root.iterdir()):
+        if path.is_dir() and (path / "test_case_results.csv").exists():
+            checkers.append(path.name)
+    return checkers
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Read test_case_results.csv and calculate confusion matrix "
-            "(TP/FP/TN/FN), precision and recall."
+            "(TP/FP/TN/FN), precision/recall, duration and token usage."
         )
     )
     parser.add_argument(
@@ -106,11 +209,52 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use all rows in the CSV instead of filtering to a single run.",
     )
+    parser.add_argument(
+        "--all-checkers",
+        action="store_true",
+        help="Summarize all checkers under history-root (latest run each).",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    history_root = Path(args.history_root).expanduser().resolve()
+
+    if args.all_checkers:
+        checkers = list_checkers(history_root)
+        if not checkers:
+            print(f"[ERROR] No checker CSVs found under: {history_root}")
+            return 1
+        print("注: avg_tok_llm = 仅对真正调用了 LLM 的用例求平均")
+        print(
+            f"{'checker':<22} {'n':>4} {'pass%':>7} {'P%':>7} {'R%':>7} "
+            f"{'total_s':>9} {'avg_s':>8} {'llm':>4} {'tok':>10} {'avg_tok_llm':>11}"
+        )
+        print("-" * 100)
+        for checker in checkers:
+            csv_path = history_root / checker / "test_case_results.csv"
+            with csv_path.open("r", newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            target_rows = rows if args.all_runs else filter_rows_by_run(rows, args.run_id or None)
+            if not target_rows:
+                continue
+            counts = calc_counts(target_rows)
+            tp, fp, tn, fn = counts["tp"], counts["fp"], counts["tn"], counts["fn"]
+            n = tp + fp + tn + fn
+            pass_rate = safe_div(tp + tn, n) * 100
+            precision = safe_div(tp, tp + fp) * 100
+            recall = safe_div(tp, tp + fn) * 100
+            runtime = calc_runtime_token_stats(target_rows)
+            print(
+                f"{checker:<22} {runtime['executed_count']:4d} "
+                f"{pass_rate:6.1f}% {precision:6.1f}% {recall:6.1f}% "
+                f"{runtime['total_duration_sec']:9.2f} {runtime['avg_duration_sec']:8.2f} "
+                f"{runtime['cases_with_llm']:4d} {runtime['total_tokens']:10d} "
+                f"{runtime['avg_tokens_per_llm_case']:11.1f}"
+            )
+        return 0
+
     csv_path = resolve_csv_path(args)
     if not csv_path.exists():
         print(f"[ERROR] CSV not found: {csv_path}")
@@ -129,29 +273,8 @@ def main() -> int:
         print(f"[ERROR] No rows matched run_id={selected_run} in {csv_path}")
         return 1
 
-    counts = calc_counts(target_rows)
-    tp = counts["tp"]
-    fp = counts["fp"]
-    tn = counts["tn"]
-    fn = counts["fn"]
-    excluded = counts["excluded"]
-    precision = safe_div(tp, tp + fp)
-    recall = safe_div(tp, tp + fn)
-
     run_id = "ALL" if args.all_runs else (args.run_id or str(target_rows[-1].get("run_id", "")).strip() or "UNKNOWN")
-
-    print(f"CSV: {csv_path}")
-    print(f"run_id: {run_id}")
-    print(f"rows_used: {len(target_rows)}")
-    print(f"excluded_rows(no expected/actual pass-fail): {excluded}")
-    print("-" * 48)
-    print(f"TP: {tp}")
-    print(f"FP: {fp}")
-    print(f"TN: {tn}")
-    print(f"FN: {fn}")
-    print("-" * 48)
-    print(f"precision: {precision:.4f} ({precision * 100:.2f}%)")
-    print(f"recall: {recall:.4f} ({recall * 100:.2f}%)")
+    print_metrics_for_rows(csv_path, target_rows, run_id)
     return 0
 
 

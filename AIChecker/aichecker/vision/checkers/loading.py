@@ -60,6 +60,7 @@ class LoadingDetector:
         cv_localized_garble_pure_cluster: int = 180,
         cv_localized_garble_min_frames: int = 1,
         cv_min_long_loading_duration_sec: float = 5.0,
+        cv_transient_spike_max_transitions: int = 2,
         enable_motion_noise_mask: bool = True,
         motion_noise_analyzer: MotionNoiseAnalyzer | None = None,
     ) -> None:
@@ -90,6 +91,7 @@ class LoadingDetector:
         self.cv_localized_garble_pure_cluster = max(1, int(cv_localized_garble_pure_cluster))
         self.cv_localized_garble_min_frames = max(1, int(cv_localized_garble_min_frames))
         self.cv_min_long_loading_duration_sec = max(0.0, float(cv_min_long_loading_duration_sec))
+        self.cv_transient_spike_max_transitions = max(1, int(cv_transient_spike_max_transitions))
         self.enable_motion_noise_mask = bool(enable_motion_noise_mask)
         self.motion_noise_analyzer = motion_noise_analyzer or MotionNoiseAnalyzer()
 
@@ -146,6 +148,70 @@ class LoadingDetector:
                 current_len = 0
 
         return best_len, best_start, best_end
+
+    def _calc_baseline_change_ratios(self, sampled_frames: list[Any]) -> list[float]:
+        """每帧相对起始帧（点击前）的变化比例。"""
+        if len(sampled_frames) < 2:
+            return []
+        gray0 = self._read_gray_image(sampled_frames[0].image_path)
+        ratios: list[float] = []
+        for frame in sampled_frames[1:]:
+            gray = self._read_gray_image(frame.image_path)
+            ratios.append(self._calc_change_ratio(gray0, gray))
+        return ratios
+
+    def _has_stable_baseline_progress(
+        self,
+        baseline_diffs: list[float],
+        *,
+        tail_frame_indices: list[int] | None = None,
+    ) -> bool:
+        """
+        是否相对起始状态形成了稳定新状态。
+
+        仅尾段持续达到“明显变化”档，才视为真正响应；微弱漂移或单帧闪一下不算。
+        """
+        if not baseline_diffs:
+            return False
+        if tail_frame_indices:
+            vals = [
+                float(baseline_diffs[idx - 1])
+                for idx in tail_frame_indices
+                if idx >= 1 and (idx - 1) < len(baseline_diffs)
+            ]
+        else:
+            window = max(1, int(round(len(baseline_diffs) * 0.2)))
+            vals = [float(x) for x in baseline_diffs[-window:]]
+        if not vals:
+            return False
+        stats = self._build_stats(vals)
+        # 尾段整体达到 clear-progress 强度，且每帧都明显不同于起始态。
+        return (
+            float(stats["mean"]) >= self.cv_clear_progress_max_threshold
+            and float(stats["min"]) >= self.cv_static_max_threshold
+        )
+
+    def _suppress_transient_high_spikes(self, ratios: list[float]) -> tuple[list[float], list[list[int]]]:
+        """
+        去掉短脉冲大跳变：大跳变次数很少，且去掉后序列回到静止档，则视为噪音。
+
+        典型：按钮按下/抬起各造成一次相邻帧跳变，中间不一定连续高值。
+        """
+        th = self.cv_clear_progress_max_threshold
+        high_idxs = [idx for idx, ratio in enumerate(ratios) if float(ratio) >= th]
+        if not high_idxs or len(high_idxs) > self.cv_transient_spike_max_transitions:
+            return list(ratios), []
+        trial = list(ratios)
+        for idx in high_idxs:
+            trial[idx] = 0.0
+        trial_stats = self._build_stats(trial)
+        if (
+            float(trial_stats["mean"]) <= self.cv_static_mean_threshold
+            and float(trial_stats["max"]) <= self.cv_static_max_threshold
+        ):
+            spans = [[idx, idx + 1] for idx in high_idxs]
+            return trial, spans
+        return list(ratios), []
 
     def _build_stage_metrics(self, sampled_frames: list[Any], ratios: list[float]) -> dict[str, Any]:
         total_frames = len(sampled_frames)
@@ -499,6 +565,9 @@ class LoadingDetector:
         self,
         ratios: list[float],
         duration_sec: float | None = None,
+        *,
+        stable_progress: bool | None = None,
+        _spike_filter_applied: bool = False,
     ) -> tuple[bool | None, str, str, dict[str, Any]]:
         stats = self._build_stats(ratios)
         metrics: dict[str, Any] = {
@@ -506,6 +575,7 @@ class LoadingDetector:
             **stats,
             "duration_sec": duration_sec,
             "min_long_loading_duration_sec": self.cv_min_long_loading_duration_sec,
+            "stable_baseline_progress": stable_progress,
         }
         if not ratios:
             return None, "CV证据不足：缺少相邻帧变化数据。", "unknown", metrics
@@ -522,6 +592,8 @@ class LoadingDetector:
                 metrics,
             )
 
+        # 低变化长跑优先于“相对起始态已切换”：点击后进入 loading 并卡住时，
+        # 尾段相对起始帧也会稳定变样，不能据此直接判有效响应。
         low_run_len, low_run_start, low_run_end = self._longest_run_at_or_below(
             ratios,
             self.cv_spinner_mean_upper,
@@ -548,13 +620,44 @@ class LoadingDetector:
                 metrics,
             )
 
-        if max_ratio >= self.cv_clear_progress_max_threshold:
+        # 无长时间低变化区间时，相对起始状态已形成稳定新外观 → 视为真正响应。
+        if stable_progress is True:
             return (
                 False,
-                "CV判定存在明显页面变化，未见持续加载卡死特征。",
+                "CV判定相对起始状态出现稳定变化，视为有效响应。",
                 "none",
                 metrics,
             )
+
+        if max_ratio >= self.cv_clear_progress_max_threshold:
+            # 未形成稳定新状态：短脉冲大跳变视为噪音（如按钮按下闪一下）。
+            if stable_progress is False and not _spike_filter_applied:
+                cleaned, spans = self._suppress_transient_high_spikes(ratios)
+                metrics["transient_spike_filter"] = {
+                    "applied": bool(spans),
+                    "suppressed_spans": spans,
+                    "max_pulse_transitions": self.cv_transient_spike_max_transitions,
+                }
+                if spans:
+                    nested_result, nested_reason, nested_type, nested_metrics = self._cv_decide(
+                        cleaned,
+                        duration_sec=duration_sec,
+                        stable_progress=False,
+                        _spike_filter_applied=True,
+                    )
+                    nested_metrics["transient_spike_filter"] = metrics["transient_spike_filter"]
+                    nested_metrics["frame_change_ratios_before_spike_filter"] = list(ratios)
+                    nested_metrics["stable_baseline_progress"] = False
+                    return nested_result, nested_reason, nested_type, nested_metrics
+                # 无法解释为短脉冲：不要仅凭 max 判“有响应”，继续后续分支。
+            elif stable_progress is None:
+                # 未提供基线信息时保持旧行为（兼容直接调用 _cv_decide 的单测）。
+                return (
+                    False,
+                    "CV判定存在明显页面变化，未见持续加载卡死特征。",
+                    "none",
+                    metrics,
+                )
 
         if mean_ratio <= self.cv_spinner_mean_upper and std_ratio <= self.cv_spinner_std_upper:
             if duration_sec is not None and duration_sec < self.cv_min_long_loading_duration_sec:
@@ -608,43 +711,94 @@ class LoadingDetector:
                 return p
         return anomaly_types[0]
 
-    def _run_loading_fallback(self, sampled_frames: list[Any], task_id: str) -> dict[str, Any]:
+    def _run_loading_fallback(
+        self,
+        sampled_frames: list[Any],
+        task_id: str,
+        *,
+        prompt_type: str = "loading",
+    ) -> dict[str, Any]:
         """
-        loading 兜底语义判断（首尾帧）。
+        VLM 兜底语义判断（首尾帧）。
+
+        prompt_type:
+        - loading: 长时间加载检测
+        - no_response: 无响应检测（与 long_loading 分离）
         """
         before = sampled_frames[0]
         after = sampled_frames[-1]
+        normalized_prompt = (prompt_type or "loading").strip().lower() or "loading"
         prompt_pack = build_prompt_for_type(
-            task_type="loading",
+            task_type=normalized_prompt,
             context={
-                "task_type": "loading",
+                "task_type": normalized_prompt,
                 "before_timestamp_sec": before.timestamp_sec,
                 "after_timestamp_sec": after.timestamp_sec,
             },
         )
+        required_fields: dict[str, type] = {
+            "bug_detected": bool,
+            "reason": str,
+            "decision_basis": str,
+            "anomaly_type": str,
+        }
+        if normalized_prompt == "no_response":
+            required_fields["has_effective_response"] = bool
+
         t_vlm_start = time.perf_counter()
         eval_result = self.evaluator.evaluate_json(
             before_image=before.image_path,
             after_image=after.image_path,
-            task_id=f"{task_id}_loading_fallback",
+            task_id=f"{task_id}_{normalized_prompt}_fallback",
             system_prompt=prompt_pack.system_prompt,
             user_prompt=prompt_pack.user_prompt,
-            required_fields={"bug_detected": bool, "reason": str, "decision_basis": str, "anomaly_type": str},
+            required_fields=required_fields,
         )
         elapsed_ms = (time.perf_counter() - t_vlm_start) * 1000.0
         parsed = eval_result.parsed_json
         anomaly_type = str(parsed.get("anomaly_type", "unknown")).strip().lower() or "unknown"
+        bug_detected = bool(parsed["bug_detected"])
+        has_effective_response = parsed.get("has_effective_response", None)
+
+        # no_response 专用：以 has_effective_response 为准，避免和 long_loading 混报。
+        if normalized_prompt == "no_response":
+            if has_effective_response is False:
+                bug_detected = True
+                anomaly_type = "no_response"
+            elif has_effective_response is True:
+                bug_detected = False
+                anomaly_type = "none"
+            elif bug_detected and anomaly_type in {"long_loading", "unknown", ""}:
+                anomaly_type = "no_response"
+            elif (not bug_detected) and anomaly_type == "no_response":
+                anomaly_type = "none"
+
         return {
-            "bug_detected": bool(parsed["bug_detected"]),
+            "bug_detected": bug_detected,
             "reason": str(parsed["reason"]),
             "decision_basis": str(parsed.get("decision_basis", parsed["reason"])),
             "anomaly_type": anomaly_type,
+            "has_effective_response": has_effective_response,
+            "prompt_type": normalized_prompt,
             "raw_response": eval_result.raw_response,
             "elapsed_ms": round(elapsed_ms, 2),
         }
 
-    def detect(self, sampled_frames: list[Any], task_id: str) -> LoadingDetectionResult:
-        """对整段 sampled_frames 做 loading 检测。"""
+    def detect(
+        self,
+        sampled_frames: list[Any],
+        task_id: str,
+        *,
+        enable_vlm_fallback: bool = True,
+        vlm_prompt_type: str = "loading",
+    ) -> LoadingDetectionResult:
+        """对整段 sampled_frames 做 loading / no_response 检测。
+
+        enable_vlm_fallback=False 时只跑 CV，仍会标记 needs_vlm，供上层先汇总结论再决定是否问 VLM。
+        vlm_prompt_type:
+        - loading: 长时间加载 VLM
+        - no_response: 无响应 VLM（推荐无响应回归使用）
+        """
         if len(sampled_frames) < 2:
             raise ValueError("loading 检测至少需要 2 帧")
         t_start = time.perf_counter()
@@ -679,29 +833,48 @@ class LoadingDetector:
                 }
 
         stage_metrics = self._build_stage_metrics(sampled_frames, ratios)
+        baseline_diffs = self._calc_baseline_change_ratios(sampled_frames)
+        stable_progress = self._has_stable_baseline_progress(
+            baseline_diffs,
+            tail_frame_indices=list(stage_metrics.get("tail_frame_indices") or []),
+        )
         screen_anomaly_type, screen_reason, screen_metrics = self._detect_black_white_screen(sampled_frames)
         cv_result, cv_reason, cv_anomaly_type, cv_metrics = self._cv_decide(
             ratios,
             duration_sec=float(stage_metrics["duration_sec"]),
+            stable_progress=stable_progress,
         )
         cv_metrics["frame_change_ratios_raw"] = raw_ratios
         cv_metrics["raw_change_stats"] = self._build_stats(raw_ratios)
+        cv_metrics["baseline_change_ratios"] = baseline_diffs
+        cv_metrics["baseline_change_stats"] = self._build_stats(baseline_diffs)
+        cv_metrics["stable_baseline_progress"] = stable_progress
         cv_metrics["motion_noise"] = motion_noise_metrics
         cv_metrics["screen_stats"] = screen_metrics
         cv_metrics["stages"] = stage_metrics
         cv_metrics["raw_stages"] = raw_stage_metrics
+
+        no_response_hit = cv_result is True and cv_anomaly_type == "no_response"
+        long_loading_hit = cv_result is True and cv_anomaly_type == "long_loading"
+        # no_response 只认 CV 明确的无响应，不把 long_loading 强行提升（易误杀正常点击后静止）。
+        # long_loading 与 no_response 边界模糊时保持 long_loading / uncertain，交给 VLM 语义判定。
+        no_response_detected = no_response_hit
+        # 无响应是更严格的无进展；长时间加载检测项可继承无响应命中。
+        long_loading_detected = long_loading_hit or no_response_hit
+
         cv_metrics["signals"] = {
             "no_response": {
-                "detected": cv_result is True and cv_anomaly_type == "no_response",
-                "status": "detected" if cv_result is True and cv_anomaly_type == "no_response" else "not_detected",
+                "detected": no_response_detected,
+                "status": "detected" if no_response_detected else "not_detected",
                 "source": "cv_frame_change",
-                "reason": cv_reason if cv_anomaly_type == "no_response" else "",
+                "reason": cv_reason if no_response_hit else "",
                 "evidence": {
                     "mean_change_ratio": float(cv_metrics["mean"]),
                     "max_change_ratio": float(cv_metrics["max"]),
                     "static_mean_threshold": self.cv_static_mean_threshold,
                     "static_max_threshold": self.cv_static_max_threshold,
                     "duration_sec": float(stage_metrics["duration_sec"]),
+                    "cv_anomaly_type": cv_anomaly_type,
                     "stage_change_stats": {
                         "early": stage_metrics["early_change_stats"],
                         "middle": stage_metrics["middle_change_stats"],
@@ -731,14 +904,22 @@ class LoadingDetector:
                 "evidence": {},
             },
             "long_loading": {
-                "detected": cv_result is True and cv_anomaly_type == "long_loading",
+                "detected": long_loading_detected,
                 "status": (
                     "detected"
-                    if cv_result is True and cv_anomaly_type == "long_loading"
+                    if long_loading_detected
                     else ("candidate_duration_too_short" if bool(cv_metrics.get("long_loading_candidate")) else "not_detected")
                 ),
-                "source": "cv_frame_change",
-                "reason": cv_reason if cv_anomaly_type == "long_loading" or bool(cv_metrics.get("long_loading_candidate")) else "",
+                "source": (
+                    "inherited_from_no_response"
+                    if (no_response_hit and not long_loading_hit)
+                    else "cv_frame_change"
+                ),
+                "reason": (
+                    cv_reason
+                    if long_loading_hit or bool(cv_metrics.get("long_loading_candidate"))
+                    else ("无响应命中，长时间加载信号继承为检测到。" if no_response_hit else "")
+                ),
                 "evidence": {
                     "mean_change_ratio": float(cv_metrics["mean"]),
                     "std_change_ratio": float(cv_metrics["std"]),
@@ -746,6 +927,7 @@ class LoadingDetector:
                     "spinner_std_upper": self.cv_spinner_std_upper,
                     "duration_sec": float(stage_metrics["duration_sec"]),
                     "min_duration_sec": self.cv_min_long_loading_duration_sec,
+                    "inherited_from": "no_response" if (no_response_hit and not long_loading_hit) else None,
                     "stage_change_stats": {
                         "early": stage_metrics["early_change_stats"],
                         "middle": stage_metrics["middle_change_stats"],
@@ -755,6 +937,23 @@ class LoadingDetector:
             },
         }
         cv_state = "uncertain" if cv_result is None else ("positive" if cv_result else "negative")
+        # CV 明确：纯静止→no_response；稳定新状态→通过。
+        # long_loading / uncertain 对 no_response 语义不清 → 交 VLM，不由 CV 强行升降。
+        needs_vlm = cv_state == "uncertain" or (
+            long_loading_hit and not bool(stable_progress) and not no_response_hit
+        )
+        if cv_state == "uncertain":
+            vlm_trigger = "cv_uncertain"
+        elif needs_vlm:
+            vlm_trigger = "long_loading_ambiguous_for_no_response"
+        else:
+            vlm_trigger = "not_needed"
+        cv_metrics["vlm_fallback"] = {
+            "needed": needs_vlm,
+            "trigger": vlm_trigger,
+            "enabled": bool(enable_vlm_fallback),
+            "skipped": bool(needs_vlm and not enable_vlm_fallback),
+        }
 
         detected_anomaly_types: list[str] = []
         reason_parts: list[str] = []
@@ -767,103 +966,149 @@ class LoadingDetector:
             source_flags.append("cv_black_white")
 
         fallback_elapsed_ms = 0.0
+        delegated_load_failed = {
+            "detected": False,
+            "status": "delegated_to_load_failure_prompt_detector",
+            "source": "load_failure_prompt_detector",
+            "reason": "页面加载失败提示由独立检测器判断。",
+            "evidence": {"scan_count": 0, "hit_count": 0},
+        }
+        delegated_failure_probe = {
+            "enabled": False,
+            "reason": "页面加载失败提示已拆分到 load_failure_prompt_detector 独立检测。",
+            "scan_selected_indices": [],
+            "scan_probe_indices": [],
+            "scan_count": 0,
+            "scan_prefilter_scores": [],
+            "hit_count": 0,
+            "load_failed": False,
+            "failure_type": "none",
+            "evidence_text": "",
+            "confidence": None,
+            "reason_detail": "",
+            "elapsed_ms": 0.0,
+        }
 
-        if cv_state == "positive":
+        if cv_state == "positive" and not needs_vlm:
             if cv_anomaly_type not in {"none", "unknown"}:
                 detected_anomaly_types.append(cv_anomaly_type)
             reason_parts.append(cv_reason)
             source_flags.append("cv_loading_signal")
-            cv_metrics["failure_text_probe"] = {
-                "enabled": False,
-                "reason": "页面加载失败提示已拆分到 load_failure_prompt_detector 独立检测。",
-                "scan_selected_indices": [],
-                "scan_probe_indices": [],
-                "scan_count": 0,
-                "scan_prefilter_scores": [],
-                "hit_count": 0,
-                "load_failed": False,
-                "failure_type": "none",
-                "evidence_text": "",
-                "confidence": None,
-                "reason_detail": "",
-                "elapsed_ms": 0.0,
-            }
-            cv_metrics["signals"]["load_failed"] = {
-                "detected": False,
-                "status": "delegated_to_load_failure_prompt_detector",
-                "source": "load_failure_prompt_detector",
-                "reason": "页面加载失败提示由独立检测器判断。",
-                "evidence": {"scan_count": 0, "hit_count": 0},
-            }
+            cv_metrics["failure_text_probe"] = dict(delegated_failure_probe)
+            cv_metrics["signals"]["load_failed"] = dict(delegated_load_failed)
             reason_parts.append("页面加载失败提示由独立检测器判断。")
-        elif cv_state == "negative":
+        elif cv_state == "negative" and not needs_vlm:
             reason_parts.append(cv_reason)
             source_flags.append("cv_clear_progress")
-            cv_metrics["failure_text_probe"] = {
-                "enabled": False,
-                "reason": "页面加载失败提示已拆分到 load_failure_prompt_detector 独立检测。",
-                "scan_selected_indices": [],
-                "scan_probe_indices": [],
-                "scan_count": 0,
-                "scan_prefilter_scores": [],
-                "hit_count": 0,
-                "load_failed": False,
-                "failure_type": "none",
-                "evidence_text": "",
-                "confidence": None,
-                "reason_detail": "",
-                "elapsed_ms": 0.0,
-            }
-            cv_metrics["signals"]["load_failed"] = {
-                "detected": False,
-                "status": "delegated_to_load_failure_prompt_detector",
-                "source": "load_failure_prompt_detector",
-                "reason": "页面加载失败提示由独立检测器判断。",
-                "evidence": {"scan_count": 0, "hit_count": 0},
-            }
+            cv_metrics["failure_text_probe"] = dict(delegated_failure_probe)
+            cv_metrics["signals"]["load_failed"] = dict(delegated_load_failed)
             reason_parts.append("页面加载失败提示由独立检测器判断。")
         else:
-            # cv_state == "uncertain"
-            cv_metrics["failure_text_probe"] = {
-                "enabled": False,
-                "reason": "页面加载失败提示已拆分到 load_failure_prompt_detector 独立检测。",
-                "scan_selected_indices": [],
-                "scan_probe_indices": [],
-                "scan_count": 0,
-                "scan_prefilter_scores": [],
-                "hit_count": 0,
-                "load_failed": False,
-                "failure_type": "none",
-                "evidence_text": "",
-                "confidence": None,
-                "reason_detail": "",
-                "elapsed_ms": 0.0,
-            }
-            cv_metrics["signals"]["load_failed"] = {
-                "detected": False,
-                "status": "delegated_to_load_failure_prompt_detector",
-                "source": "load_failure_prompt_detector",
-                "reason": "页面加载失败提示由独立检测器判断。",
-                "evidence": {"scan_count": 0, "hit_count": 0},
-            }
-            reason_parts.append(cv_reason)
-            source_flags.append("cv_uncertain")
-            fallback_result = self._run_loading_fallback(sampled_frames=sampled_frames, task_id=task_id)
-            fallback_elapsed_ms = float(fallback_result["elapsed_ms"])
-            reason_parts.append(f"VLM兜底：{fallback_result['reason']}")
-            reason_parts.append(f"VLM依据：{fallback_result['decision_basis']}")
-            source_flags.append("vlm_fallback")
-            raw_response_parts.append(f"[loading_fallback]\n{fallback_result['raw_response']}")
-            fallback_anomaly_type = str(fallback_result["anomaly_type"])
-            if bool(fallback_result["bug_detected"]) and fallback_anomaly_type in {
-                "black_screen",
-                "white_screen",
-                "garbled_screen",
-                "no_response",
-                "long_loading",
-                "unknown",
-            }:
-                detected_anomaly_types.append(fallback_anomaly_type)
+            if cv_state == "positive" and cv_anomaly_type not in {"none", "unknown"}:
+                detected_anomaly_types.append(cv_anomaly_type)
+                reason_parts.append(cv_reason)
+                source_flags.append("cv_loading_signal")
+            else:
+                reason_parts.append(cv_reason)
+                source_flags.append("cv_uncertain")
+
+            cv_metrics["failure_text_probe"] = dict(delegated_failure_probe)
+            cv_metrics["signals"]["load_failed"] = dict(delegated_load_failed)
+            reason_parts.append("页面加载失败提示由独立检测器判断。")
+
+            if enable_vlm_fallback:
+                fallback_result = self._run_loading_fallback(
+                    sampled_frames=sampled_frames,
+                    task_id=task_id,
+                    prompt_type=vlm_prompt_type,
+                )
+                fallback_elapsed_ms = float(fallback_result["elapsed_ms"])
+                reason_parts.append(f"VLM兜底：{fallback_result['reason']}")
+                reason_parts.append(f"VLM依据：{fallback_result['decision_basis']}")
+                source_flags.append("vlm_fallback")
+                raw_response_parts.append(f"[loading_fallback]\n{fallback_result['raw_response']}")
+                fallback_anomaly_type = str(fallback_result["anomaly_type"]).strip().lower() or "unknown"
+                cv_metrics["vlm_fallback"].update(
+                    {
+                        "bug_detected": bool(fallback_result["bug_detected"]),
+                        "anomaly_type": fallback_anomaly_type,
+                        "reason": str(fallback_result.get("reason", "")),
+                        "prompt_type": str(fallback_result.get("prompt_type") or vlm_prompt_type),
+                        "has_effective_response": fallback_result.get("has_effective_response"),
+                    }
+                )
+
+                prompt_is_no_response = str(fallback_result.get("prompt_type") or vlm_prompt_type).lower() == "no_response"
+                if prompt_is_no_response:
+                    # 无响应专用路径：去掉 CV 带来的 long_loading 主类型干扰，只回写 no_response。
+                    detected_anomaly_types[:] = [x for x in detected_anomaly_types if x != "long_loading"]
+                    if bool(fallback_result["bug_detected"]) or fallback_anomaly_type == "no_response":
+                        detected_anomaly_types.append("no_response")
+                        cv_metrics["signals"]["no_response"] = {
+                            **cv_metrics["signals"]["no_response"],
+                            "detected": True,
+                            "status": "detected",
+                            "source": "vlm_fallback",
+                            "reason": str(fallback_result.get("reason", "")),
+                        }
+                    else:
+                        cv_metrics["signals"]["no_response"] = {
+                            **cv_metrics["signals"]["no_response"],
+                            "detected": False,
+                            "status": "not_detected",
+                            "source": "vlm_fallback",
+                            "reason": str(fallback_result.get("reason", "")),
+                        }
+                else:
+                    if bool(fallback_result["bug_detected"]) and fallback_anomaly_type in {
+                        "black_screen",
+                        "white_screen",
+                        "garbled_screen",
+                        "no_response",
+                        "long_loading",
+                        "unknown",
+                    }:
+                        detected_anomaly_types.append(fallback_anomaly_type)
+
+                    # 用 VLM 结果回写结构化信号，供按检测项读取。
+                    if bool(fallback_result["bug_detected"]) and fallback_anomaly_type == "no_response":
+                        cv_metrics["signals"]["no_response"] = {
+                            **cv_metrics["signals"]["no_response"],
+                            "detected": True,
+                            "status": "detected",
+                            "source": "vlm_fallback",
+                            "reason": str(fallback_result.get("reason", "")),
+                        }
+                        cv_metrics["signals"]["long_loading"] = {
+                            **cv_metrics["signals"]["long_loading"],
+                            "detected": True,
+                            "status": "detected",
+                            "source": "inherited_from_no_response",
+                            "reason": "VLM判定无响应，长时间加载信号继承为检测到。",
+                            "evidence": {
+                                **cv_metrics["signals"]["long_loading"].get("evidence", {}),
+                                "inherited_from": "no_response",
+                            },
+                        }
+                    elif bool(fallback_result["bug_detected"]) and fallback_anomaly_type == "long_loading":
+                        cv_metrics["signals"]["long_loading"] = {
+                            **cv_metrics["signals"]["long_loading"],
+                            "detected": True,
+                            "status": "detected",
+                            "source": "vlm_fallback",
+                            "reason": str(fallback_result.get("reason", "")),
+                        }
+                    elif not bool(fallback_result["bug_detected"]):
+                        cv_metrics["signals"]["no_response"] = {
+                            **cv_metrics["signals"]["no_response"],
+                            "detected": False,
+                            "status": "not_detected",
+                            "source": "vlm_fallback",
+                            "reason": str(fallback_result.get("reason", "")),
+                        }
+            else:
+                reason_parts.append("CV结果待VLM确认（本次未启用VLM兜底）。")
+                source_flags.append("cv_pending_vlm")
 
         normalized_anomaly_types = self._unique_keep_order(detected_anomaly_types)
         bug_detected = len([x for x in normalized_anomaly_types if x not in {"none"}]) > 0

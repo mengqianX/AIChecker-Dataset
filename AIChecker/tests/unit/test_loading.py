@@ -143,6 +143,157 @@ def test_long_loading_candidate_requires_minimum_duration() -> None:
     assert long_metrics["duration_sec"] == 6.0
 
 
+def test_transient_button_pulse_is_noise_not_clear_progress(tmp_path: Path) -> None:
+    """中间短脉冲大跳变后回到原状，应视为噪音并判无响应，不能仅凭 max 判有响应。"""
+    base = (30, 30, 30)
+    flash = (220, 220, 220)
+    frames = []
+    for idx in range(12):
+        color = flash if idx in {6, 7} else base
+        frames.append(_frame(_write_image(tmp_path / f"frame_{idx}.png", color), float(idx)))
+
+    result = _detector().detect(frames, task_id="transient_pulse")
+    nr = result.cv_metrics["signals"]["no_response"]
+
+    assert result.cv_metrics["stable_baseline_progress"] is False
+    assert result.cv_metrics.get("transient_spike_filter", {}).get("applied") is True
+    assert nr["detected"] is True
+    assert "no_response" in result.anomaly_types
+    assert result.decision_source != "cv_clear_progress"
+
+
+def test_stable_state_change_is_clear_progress(tmp_path: Path) -> None:
+    """相对起始帧切换到新状态并短时保持，应视为真正响应（静止时长不超过 long_loading 阈值）。"""
+    before = (30, 30, 30)
+    after = (220, 80, 40)
+    frames = []
+    # 总时长约 3.5s，切换后静止不足 5s，避免被低变化长跑误判为 long_loading。
+    for idx in range(8):
+        color = before if idx < 2 else after
+        frames.append(_frame(_write_image(tmp_path / f"frame_{idx}.png", color), float(idx) * 0.5))
+
+    result = _detector().detect(frames, task_id="stable_toggle")
+    nr = result.cv_metrics["signals"]["no_response"]
+
+    assert result.cv_metrics["stable_baseline_progress"] is True
+    assert result.bug_detected is False
+    assert nr["detected"] is False
+    assert result.anomaly_types == ["none"]
+    assert "稳定变化" in result.reason or result.decision_source == "cv_clear_progress"
+
+
+def test_stable_baseline_with_long_low_run_is_long_loading(tmp_path: Path) -> None:
+    """切换到新外观后长时间低变化停留，即使相对起始态已稳定变化，也应判 long_loading。"""
+    before = (30, 30, 30)
+    after = (220, 80, 40)
+    frames = []
+    for idx in range(12):
+        color = before if idx < 2 else after
+        frames.append(_frame(_write_image(tmp_path / f"frame_{idx}.png", color), float(idx)))
+
+    result = _detector().detect(frames, task_id="stable_then_stuck", enable_vlm_fallback=False)
+    ll = result.cv_metrics["signals"]["long_loading"]
+
+    assert result.cv_metrics["stable_baseline_progress"] is True
+    assert ll["detected"] is True
+    assert "long_loading" in result.anomaly_types
+    assert result.decision_source != "cv_clear_progress"
+
+
+def test_long_loading_does_not_auto_promote_to_no_response(tmp_path: Path) -> None:
+    """long_loading 不应被 CV 强行提升为 no_response（避免正常点击后局部静止误报）。"""
+    frames = [
+        _frame(_write_image(tmp_path / f"frame_{idx}.png", (30 + idx, 30, 30)), float(idx))
+        for idx in range(8)
+    ]
+    detector = _detector()
+
+    def _force_long_loading(self, ratios, duration_sec=None, **_kwargs):  # noqa: ANN001
+        metrics = {
+            "frame_change_ratios": list(ratios),
+            **self._build_stats(ratios),
+            "duration_sec": duration_sec,
+            "min_long_loading_duration_sec": self.cv_min_long_loading_duration_sec,
+        }
+        return True, "CV判定长时间加载", "long_loading", metrics
+
+    original = LoadingDetector._cv_decide
+    LoadingDetector._cv_decide = _force_long_loading  # type: ignore[method-assign]
+    try:
+        result = detector.detect(frames, task_id="ll_no_promote", enable_vlm_fallback=False)
+    finally:
+        LoadingDetector._cv_decide = original  # type: ignore[method-assign]
+
+    nr = result.cv_metrics["signals"]["no_response"]
+    ll = result.cv_metrics["signals"]["long_loading"]
+    assert result.anomaly_type == "long_loading"
+    assert ll["detected"] is True
+    assert nr["detected"] is False
+    assert result.cv_metrics.get("vlm_fallback", {}).get("needed") is True
+    assert result.cv_metrics.get("vlm_fallback", {}).get("skipped") is True
+
+
+def test_no_response_hit_is_inherited_by_long_loading_signal(tmp_path: Path) -> None:
+    frames = [
+        _frame(_write_image(tmp_path / f"frame_{idx}.png", (30, 30, 30)), float(idx))
+        for idx in range(8)
+    ]
+
+    result = _detector().detect(frames, task_id="inherit_nr")
+    nr = result.cv_metrics["signals"]["no_response"]
+    ll = result.cv_metrics["signals"]["long_loading"]
+
+    assert result.anomaly_type == "no_response"
+    assert nr["detected"] is True
+    assert ll["detected"] is True
+    assert ll.get("source") == "inherited_from_no_response" or ll["evidence"].get("inherited_from") == "no_response"
+
+
+def test_vlm_uncertain_updates_no_response_signal(tmp_path: Path) -> None:
+    """CV 不确定时，VLM 若判 no_response，应回写信号。"""
+
+    class _VlmNoResponse:
+        def evaluate_json(self, **_kwargs: Any) -> Any:
+            return SimpleNamespace(
+                parsed_json={
+                    "bug_detected": True,
+                    "reason": "页面长时间无反馈",
+                    "decision_basis": "首尾帧几乎不变",
+                    "anomaly_type": "no_response",
+                },
+                raw_response='{"bug_detected":true,"anomaly_type":"no_response"}',
+            )
+
+    frames = [
+        _frame(_write_image(tmp_path / f"frame_{idx}.png", (30 + idx * 12, 40, 80 - idx * 5)), float(idx))
+        for idx in range(4)
+    ]
+    detector = LoadingDetector(evaluator=_VlmNoResponse())
+
+    def _force_uncertain(self, ratios, duration_sec=None, **_kwargs):  # noqa: ANN001
+        metrics = {
+            "frame_change_ratios": list(ratios),
+            **self._build_stats(ratios),
+            "duration_sec": duration_sec,
+            "min_long_loading_duration_sec": self.cv_min_long_loading_duration_sec,
+        }
+        return None, "CV判定不确定：变化特征介于静止与明显进展之间，转交VLM语义判定。", "unknown", metrics
+
+    original = LoadingDetector._cv_decide
+    LoadingDetector._cv_decide = _force_uncertain  # type: ignore[method-assign]
+    try:
+        result = detector.detect(frames, task_id="vlm_uncertain_nr")
+    finally:
+        LoadingDetector._cv_decide = original  # type: ignore[method-assign]
+
+    assert result.cv_metrics["vlm_fallback"]["needed"] is True
+    assert result.cv_metrics["vlm_fallback"]["trigger"] == "cv_uncertain"
+    assert result.cv_metrics["signals"]["no_response"]["detected"] is True
+    assert result.cv_metrics["signals"]["no_response"]["source"] == "vlm_fallback"
+    assert "no_response" in result.anomaly_types
+
+
+
 def test_detect_exposes_structured_loading_signals(tmp_path: Path) -> None:
     frames = [
         _frame(_write_image(tmp_path / "frame_0.png", (10, 20, 30)), 0.0),

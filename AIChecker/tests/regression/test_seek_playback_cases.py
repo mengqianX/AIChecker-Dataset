@@ -80,6 +80,9 @@ def test_seek_playback_from_testagent_case(case_json_path: Path, request: pytest
         anomaly_type=result.anomaly_type,
         seek_detected=result.seek_detected,
         seek_timestamp_sec=result.seek_timestamp_sec,
+        detect_elapsed_ms=(result.timing or {}).get("elapsed_ms", ""),
+        prompt_call_count=0,
+        total_tokens=0,
     )
 
     assert actual_passed == expected_passed, (

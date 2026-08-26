@@ -89,6 +89,64 @@ def test_list_refresh_uses_bounds_as_target_region(tmp_path: Path) -> None:
     assert "x=8" in prompt
 
 
+def test_list_refresh_cv_short_circuits_when_roi_unchanged(tmp_path: Path) -> None:
+    """ROI 完全一致时跳过 VLM，直接判未刷新。"""
+    before = _write_page(tmp_path / "before.png", "same list")
+    after = _write_page(tmp_path / "after.png", "same list")
+    evaluator = _FakeEvaluator(
+        {
+            "list_refreshed": True,
+            "still_loading": False,
+            "target_region": "热门歌手列表区域",
+            "reason": "should not be used",
+        }
+    )
+
+    result = ListRefreshDetector(evaluator=evaluator).detect(
+        before_image=before,
+        after_image=after,
+        target_bounds=None,
+        expected_list_refresh=True,
+    )
+
+    assert evaluator.calls == []
+    assert result.roi_changed_pixel_ratio == 0.0
+    assert result.list_refreshed is False
+    assert result.still_loading is False
+    assert result.expectation_met is False
+    assert result.bug_detected is True
+    assert result.timing is not None
+    assert result.timing["vlm_elapsed_ms"] == 0.0
+    assert "CV short-circuit" in result.reason
+
+
+def test_list_refresh_ignores_vlm_expectation_met_when_inconsistent(tmp_path: Path) -> None:
+    before = _write_page(tmp_path / "before.png", "old")
+    after = _write_page(tmp_path / "after.png", "new")
+    evaluator = _FakeEvaluator(
+        {
+            "list_refreshed": False,
+            "still_loading": False,
+            "target_region": "列表",
+            "expectation_met": True,  # 与 list_refreshed=False + 期望刷新 矛盾
+            "confidence": 0.9,
+            "reason": "列表未刷新。",
+        }
+    )
+
+    result = ListRefreshDetector(evaluator=evaluator).detect(
+        before_image=before,
+        after_image=after,
+        target_bounds=None,
+        expected_list_refresh=True,
+    )
+
+    assert len(evaluator.calls) == 1
+    assert result.list_refreshed is False
+    assert result.expectation_met is False
+    assert result.bug_detected is True
+
+
 def test_parse_list_refresh_accepts_natural_language_expectation_without_bounds() -> None:
     task = parse_task_from_payload(
         {

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from aichecker.checkers import check_toggle
 from aichecker.utils import _encode
+from testagent_case_utils import set_checker_report_meta
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 TESTCASE_DIR = REPO_ROOT / "testcase" / "toggle_state"
@@ -36,7 +37,18 @@ def _collect_testcase_jsons():
 
 
 @pytest.mark.parametrize("platform,app_name,json_path", _collect_testcase_jsons())
-def test_toggle_state_from_testcase(platform: str, app_name: str, json_path: Path):
+def test_toggle_state_from_testcase(
+    platform: str, app_name: str, json_path: Path, request: pytest.FixtureRequest
+):
+    set_checker_report_meta(
+        request,
+        checker="toggle",
+        app=platform,
+        case_id=app_name,
+        case_file=str(json_path),
+        prompt_call_count=0,
+        total_tokens=0,
+    )
     if not json_path.exists():
         pytest.skip(f"JSON not found: {json_path}")
 
@@ -60,6 +72,12 @@ def test_toggle_state_from_testcase(platform: str, app_name: str, json_path: Pat
         groundtruth_source = f"label={payload.get('label')}"
     else:
         pytest.skip(f"No groundtruth found in {json_path} (missing 'expected_passed' or 'label')")
+
+    set_checker_report_meta(
+        request,
+        expected_passed=expected_pass,
+        actual_passed=bool(result.passed),
+    )
 
     assert result.passed is expected_pass, (
         f"{platform}/{app_name}: expected passed={expected_pass} ({groundtruth_source}), "

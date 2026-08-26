@@ -39,6 +39,8 @@ class VideoPlayDetector(SeekPlaybackDetector):
         post_play_settle_sec: float = 0.5,
         play_roi_change_threshold: float = 0.018,
         play_full_change_threshold: float = 0.05,
+        play_content_change_threshold: float = 0.03,
+        motion_min_active_ratio: float = 0.34,
         **kwargs: Any,
     ) -> None:
         super().__init__(logger=logger, **kwargs)
@@ -46,10 +48,16 @@ class VideoPlayDetector(SeekPlaybackDetector):
         self.post_play_settle_sec = max(0.0, float(post_play_settle_sec))
         self.play_roi_change_threshold = max(0.0, float(play_roi_change_threshold))
         self.play_full_change_threshold = max(0.0, float(play_full_change_threshold))
+        self.play_content_change_threshold = max(0.0, float(play_content_change_threshold))
+        self.motion_min_active_ratio = min(1.0, max(0.0, float(motion_min_active_ratio)))
 
     @staticmethod
     def _candidate_score(item: dict[str, Any]) -> float:
-        return float(item["bottom_roi_change_ratio"]) * 1.5 + float(item["full_change_ratio"])
+        return (
+            float(item["bottom_roi_change_ratio"]) * 1.5
+            + float(item["full_change_ratio"])
+            + float(item["content_change_ratio"]) * 0.8
+        )
 
     def _locate_play_action(
         self,
@@ -62,6 +70,7 @@ class VideoPlayDetector(SeekPlaybackDetector):
             "transitions": transitions,
             "play_roi_change_threshold": self.play_roi_change_threshold,
             "play_full_change_threshold": self.play_full_change_threshold,
+            "play_content_change_threshold": self.play_content_change_threshold,
         }
         if play_timestamp_sec is not None:
             metrics["play_candidate"] = {
@@ -80,6 +89,7 @@ class VideoPlayDetector(SeekPlaybackDetector):
             for item in candidates
             if float(item["bottom_roi_change_ratio"]) >= self.play_roi_change_threshold
             or float(item["full_change_ratio"]) >= self.play_full_change_threshold
+            or float(item["content_change_ratio"]) >= self.play_content_change_threshold
         ]
         if not hits:
             metrics["play_candidate"] = None
@@ -97,14 +107,26 @@ class VideoPlayDetector(SeekPlaybackDetector):
         transitions = self._transition_metrics(frames)
         content_ratios = [float(item["content_change_ratio"]) for item in transitions]
         content_stats = self._stats(content_ratios)
+        active_count = sum(
+            1 for ratio in content_ratios if ratio >= self.playback_mean_change_threshold
+        )
+        active_ratio = active_count / max(1, len(content_ratios))
         metrics = {
             "content_change_ratios": content_ratios,
             "content_change_stats": content_stats,
+            "active_transition_count": active_count,
+            "active_transition_ratio": active_ratio,
+            "motion_min_active_ratio": self.motion_min_active_ratio,
         }
-        passed = (
+        # 要求变化足够，且不是单次 UI 尖峰：活跃转场占比需达标。
+        intensity_ok = (
             float(content_stats["mean"]) >= self.playback_mean_change_threshold
             or float(content_stats["max"]) >= self.playback_max_change_threshold
         )
+        sustained_ok = active_ratio >= self.motion_min_active_ratio and active_count >= 2
+        if len(content_ratios) <= 2:
+            sustained_ok = active_count >= 1 and float(content_stats["mean"]) >= self.playback_mean_change_threshold
+        passed = intensity_ok and sustained_ok
         return passed, metrics
 
     def _judge_post_play(
@@ -240,6 +262,8 @@ class VideoPlayDetector(SeekPlaybackDetector):
                     "post_play_settle_sec": self.post_play_settle_sec,
                     "play_roi_change_threshold": self.play_roi_change_threshold,
                     "play_full_change_threshold": self.play_full_change_threshold,
+                    "play_content_change_threshold": self.play_content_change_threshold,
+                    "motion_min_active_ratio": self.motion_min_active_ratio,
                     "playback_mean_change_threshold": self.playback_mean_change_threshold,
                     "playback_max_change_threshold": self.playback_max_change_threshold,
                 },

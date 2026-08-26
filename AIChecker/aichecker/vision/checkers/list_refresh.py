@@ -38,6 +38,10 @@ class ListRefreshResult:
 class ListRefreshDetector:
     """基于目标区域 bounds + 前后截图的列表刷新检测器。"""
 
+    # ROI 几乎无变化时直接判未刷新，跳过 VLM。
+    _NO_CHANGE_RATIO_THRESHOLD = 1e-4
+    _NO_CHANGE_MEAN_ABS_DIFF_THRESHOLD = 0.5
+
     def __init__(
         self,
         evaluator: VisionEvaluator,
@@ -67,6 +71,13 @@ class ListRefreshDetector:
         change_ratio = changed_pixels / total_pixels
         mean_abs_diff = float(diff_gray.mean())
         return mean_abs_diff, change_ratio, diff_gray
+
+    @classmethod
+    def _is_roi_unchanged(cls, mean_abs_diff: float, changed_pixel_ratio: float) -> bool:
+        return (
+            changed_pixel_ratio <= cls._NO_CHANGE_RATIO_THRESHOLD
+            and mean_abs_diff <= cls._NO_CHANGE_MEAN_ABS_DIFF_THRESHOLD
+        )
 
     @staticmethod
     def _resolve_target_region(
@@ -111,6 +122,45 @@ class ListRefreshDetector:
                 paths.append(out_path)
         return paths
 
+    def _build_result(
+        self,
+        *,
+        list_refreshed: bool,
+        still_loading: bool,
+        expected_list_refresh: bool,
+        task_intent: str,
+        target_region: str,
+        list_region: dict[str, int],
+        roi_mean_abs_diff: float,
+        roi_changed_pixel_ratio: float,
+        reason: str,
+        confidence: float | None,
+        raw_response: str,
+        detect_start: float,
+        vlm_elapsed_ms: float,
+        preprocess_evidence: dict[str, Any],
+    ) -> ListRefreshResult:
+        expectation_met = (list_refreshed == bool(expected_list_refresh)) and not still_loading
+        return ListRefreshResult(
+            bug_detected=not expectation_met,
+            expectation_met=expectation_met,
+            task_intent=task_intent,
+            list_refreshed=list_refreshed,
+            still_loading=still_loading,
+            target_region=target_region,
+            target_region_box=list_region,
+            roi_mean_abs_diff=round(roi_mean_abs_diff, 3),
+            roi_changed_pixel_ratio=round(roi_changed_pixel_ratio, 4),
+            reason=reason,
+            confidence=confidence,
+            raw_response=raw_response,
+            timing={
+                "detect_elapsed_ms": round((time.perf_counter() - detect_start) * 1000.0, 2),
+                "vlm_elapsed_ms": round(vlm_elapsed_ms, 2),
+            },
+            preprocess_evidence=preprocess_evidence,
+        )
+
     def detect(
         self,
         before_image: Path,
@@ -143,8 +193,6 @@ class ListRefreshDetector:
         before_roi = before[y1:y2, x1:x2]
         after_roi = after[y1:y2, x1:x2]
         roi_mean_abs_diff, roi_changed_pixel_ratio, diff_gray = self._calc_diff_metrics(before_roi, after_roi)
-        preprocess_extra_images = self._save_roi_artifacts(before_roi, after_roi, diff_gray, task_id=task_id)
-
         preprocess_structured = {
             "evidence_type": "list_refresh_roi_diff",
             "list_region_desc": list_region_desc,
@@ -153,6 +201,32 @@ class ListRefreshDetector:
             "roi_changed_pixel_ratio": round(roi_changed_pixel_ratio, 4),
             "notes": "该指标用于衡量目标列表区域在前后截图中的变化强度，辅助判定是否已刷新。",
         }
+        task_intent = "检测控件触发后，目标内容列表区域是否发生刷新变化。"
+
+        # CV 分流：ROI 几乎一致 → 未刷新，跳过 VLM。
+        if self._is_roi_unchanged(roi_mean_abs_diff, roi_changed_pixel_ratio):
+            self._save_roi_artifacts(before_roi, after_roi, diff_gray, task_id=task_id)
+            return self._build_result(
+                list_refreshed=False,
+                still_loading=False,
+                expected_list_refresh=expected_list_refresh,
+                task_intent=task_intent,
+                target_region=list_region_desc,
+                list_region=list_region,
+                roi_mean_abs_diff=roi_mean_abs_diff,
+                roi_changed_pixel_ratio=roi_changed_pixel_ratio,
+                reason=(
+                    "CV short-circuit: 目标列表 ROI 前后几乎无变化，判定为未刷新，跳过 VLM。"
+                    f" mean_abs_diff={roi_mean_abs_diff:.3f}, changed_ratio={roi_changed_pixel_ratio:.4f}"
+                ),
+                confidence=1.0,
+                raw_response="",
+                detect_start=detect_start,
+                vlm_elapsed_ms=0.0,
+                preprocess_evidence=preprocess_structured,
+            )
+
+        preprocess_extra_images = self._save_roi_artifacts(before_roi, after_roi, diff_gray, task_id=task_id)
         preprocess_summary = (
             "前处理证据(list_refresh): "
             f"region={list_region_desc}, box=({x1},{y1})-({x2},{y2}), "
@@ -197,32 +271,19 @@ class ListRefreshDetector:
         )
         vlm_elapsed_ms = (time.perf_counter() - t_vlm_start) * 1000.0
         parsed = eval_result.parsed_json
-        list_refreshed = bool(parsed.get("list_refreshed", False))
-        still_loading = bool(parsed.get("still_loading", False))
-        expectation_met_raw = parsed.get("expectation_met")
-        expectation_met = (
-            bool(expectation_met_raw)
-            if isinstance(expectation_met_raw, bool)
-            else ((list_refreshed == bool(expected_list_refresh)) and not still_loading)
-        )
-        bug_detected = not expectation_met
-
-        return ListRefreshResult(
-            bug_detected=bug_detected,
-            expectation_met=expectation_met,
+        return self._build_result(
+            list_refreshed=bool(parsed.get("list_refreshed", False)),
+            still_loading=bool(parsed.get("still_loading", False)),
+            expected_list_refresh=expected_list_refresh,
             task_intent=prompt_pack.task_intent,
-            list_refreshed=list_refreshed,
-            still_loading=still_loading,
             target_region=str(parsed.get("target_region", list_region_desc)),
-            target_region_box=list_region,
-            roi_mean_abs_diff=round(roi_mean_abs_diff, 3),
-            roi_changed_pixel_ratio=round(roi_changed_pixel_ratio, 4),
+            list_region=list_region,
+            roi_mean_abs_diff=roi_mean_abs_diff,
+            roi_changed_pixel_ratio=roi_changed_pixel_ratio,
             reason=str(parsed.get("reason", "")),
             confidence=float(parsed["confidence"]) if parsed.get("confidence") is not None else None,
             raw_response=eval_result.raw_response,
-            timing={
-                "detect_elapsed_ms": round((time.perf_counter() - detect_start) * 1000.0, 2),
-                "vlm_elapsed_ms": round(vlm_elapsed_ms, 2),
-            },
+            detect_start=detect_start,
+            vlm_elapsed_ms=vlm_elapsed_ms,
             preprocess_evidence=preprocess_structured,
         )

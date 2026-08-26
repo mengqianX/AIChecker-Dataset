@@ -35,7 +35,7 @@ class SeekPlaybackDetector:
     def __init__(
         self,
         logger: logging.Logger | None = None,
-        post_seek_window_sec: float = 6.0,
+        post_seek_window_sec: float = 10.0,
         post_seek_settle_sec: float = 0.5,
         long_loading_threshold_sec: float = 5.0,
         seek_roi_change_threshold: float = 0.025,
@@ -126,6 +126,71 @@ class SeekPlaybackDetector:
             )
         return transitions
 
+    def _frames_in_window(self, frames: list[Any], start_sec: float, end_sec: float) -> list[Any]:
+        return [
+            frame
+            for frame in frames
+            if start_sec <= float(getattr(frame, "timestamp_sec", 0.0)) <= end_sec
+        ]
+
+    def _post_seek_primary_frames(self, frames: list[Any], seek_ts: float) -> list[Any]:
+        window_start = seek_ts + self.post_seek_settle_sec
+        window_end = seek_ts + self.post_seek_window_sec
+        return self._frames_in_window(frames, window_start, window_end)
+
+    def _post_seek_judge_frames(
+        self, frames: list[Any], seek_ts: float
+    ) -> tuple[list[Any], str, float, float]:
+        """选取用于判定的 post-seek 帧，必要时回退以保证能给出结论。"""
+        window_start = seek_ts + self.post_seek_settle_sec
+        window_end = seek_ts + self.post_seek_window_sec
+        primary = self._frames_in_window(frames, window_start, window_end)
+        if len(primary) >= 2:
+            return primary, "primary", window_start, window_end
+
+        # 片尾/短尾：放宽 settle，使用 seek 后全部剩余帧。
+        after_seek = [
+            frame
+            for frame in frames
+            if float(getattr(frame, "timestamp_sec", 0.0)) >= seek_ts
+        ]
+        if len(after_seek) >= 2:
+            start = float(getattr(after_seek[0], "timestamp_sec", seek_ts))
+            end = float(getattr(after_seek[-1], "timestamp_sec", seek_ts))
+            return after_seek, "after_seek_fallback", start, end
+
+        # 仅 1 帧时，补上 seek 前一帧作为对比锚点，仍给出播放结论。
+        before = [
+            frame
+            for frame in frames
+            if float(getattr(frame, "timestamp_sec", 0.0)) < seek_ts
+        ]
+        if before and after_seek:
+            anchored = [before[-1], *after_seek]
+            start = float(getattr(anchored[0], "timestamp_sec", seek_ts))
+            end = float(getattr(anchored[-1], "timestamp_sec", seek_ts))
+            return anchored, "pre_seek_anchor_fallback", start, end
+
+        sparse = after_seek or frames[-1:]
+        start = float(getattr(sparse[0], "timestamp_sec", seek_ts)) if sparse else seek_ts
+        end = float(getattr(sparse[-1], "timestamp_sec", seek_ts)) if sparse else seek_ts
+        return sparse, "sparse_fallback", start, end
+
+    @staticmethod
+    def _seek_score(item: dict[str, Any]) -> float:
+        return float(item["bottom_roi_change_ratio"]) * 1.5 + float(item["full_change_ratio"])
+
+    @staticmethod
+    def _frozen_tail_count(ratios: list[float], threshold: float) -> int:
+        """从窗口末尾起连续近静止转场数。"""
+        frozen = 0
+        for ratio in reversed(ratios):
+            if float(ratio) <= threshold:
+                frozen += 1
+            else:
+                break
+        return frozen
+
     def _locate_seek(
         self,
         frames: list[Any],
@@ -137,11 +202,13 @@ class SeekPlaybackDetector:
             "transitions": transitions,
             "seek_roi_change_threshold": self.seek_roi_change_threshold,
             "seek_full_change_threshold": self.seek_full_change_threshold,
+            "min_post_seek_frames": 2,
         }
         if seek_timestamp_sec is not None:
             metrics["seek_candidate"] = {
                 "timestamp_sec": seek_timestamp_sec,
                 "source": "input",
+                "post_seek_frame_count": len(self._post_seek_primary_frames(frames, seek_timestamp_sec)),
             }
             return True, seek_timestamp_sec, "input", metrics
 
@@ -153,26 +220,39 @@ class SeekPlaybackDetector:
         candidates = transitions[ignore_first:]
         if not candidates:
             candidates = transitions
-        best = max(
-            candidates,
-            key=lambda item: (
-                float(item["bottom_roi_change_ratio"]) * 1.5 + float(item["full_change_ratio"])
-            ),
+
+        enriched: list[dict[str, Any]] = []
+        for item in candidates:
+            seek_ts = float(item["to_timestamp_sec"])
+            enriched.append(
+                {
+                    **item,
+                    "score": self._seek_score(item),
+                    "post_seek_frame_count": len(self._post_seek_primary_frames(frames, seek_ts)),
+                }
+            )
+        metrics["ranked_candidates"] = sorted(
+            enriched, key=lambda item: float(item["score"]), reverse=True
         )
-        bottom_hit = float(best["bottom_roi_change_ratio"]) >= self.seek_roi_change_threshold
-        full_hit = float(best["full_change_ratio"]) >= self.seek_full_change_threshold
-        metrics["seek_candidate"] = best
 
-        if bottom_hit or full_hit:
-            return True, float(best["to_timestamp_sec"]), "auto_cv", metrics
-        return False, None, "none", metrics
-
-    def _frames_in_window(self, frames: list[Any], start_sec: float, end_sec: float) -> list[Any]:
-        return [
-            frame
-            for frame in frames
-            if start_sec <= float(getattr(frame, "timestamp_sec", 0.0)) <= end_sec
+        # 方案 A：只在“seek 后主窗口仍可判定”的候选里选最强转场，避免片尾假峰值。
+        judgable = [
+            item
+            for item in enriched
+            if int(item["post_seek_frame_count"]) >= 2
+            and (
+                float(item["bottom_roi_change_ratio"]) >= self.seek_roi_change_threshold
+                or float(item["full_change_ratio"]) >= self.seek_full_change_threshold
+            )
         ]
+        metrics["judgable_candidate_count"] = len(judgable)
+        if not judgable:
+            metrics["seek_candidate"] = None
+            return False, None, "none", metrics
+
+        best = max(judgable, key=lambda item: float(item["score"]))
+        metrics["seek_candidate"] = best
+        return True, float(best["to_timestamp_sec"]), "auto_cv", metrics
 
     def _detect_black_white_tail(self, frames: list[Any]) -> tuple[str | None, dict[str, Any]]:
         tail = frames[-min(len(frames), 3) :]
@@ -202,20 +282,33 @@ class SeekPlaybackDetector:
         return None, metrics
 
     def _judge_post_seek(self, frames: list[Any], seek_ts: float) -> tuple[bool, str, str, dict[str, Any]]:
-        window_start = seek_ts + self.post_seek_settle_sec
-        window_end = seek_ts + self.post_seek_window_sec
-        window_frames = self._frames_in_window(frames, window_start, window_end)
+        window_frames, window_mode, window_start, window_end = self._post_seek_judge_frames(
+            frames, seek_ts
+        )
+        metrics: dict[str, Any] = {
+            "window_mode": window_mode,
+            "window_start_sec": window_start,
+            "window_end_sec": window_end,
+            "window_frame_count": len(window_frames),
+        }
+        if not window_frames:
+            return False, "unknown", "seek 后无可用帧，判定为播放未恢复。", metrics
+
+        screen_anomaly, screen_metrics = self._detect_black_white_tail(window_frames)
+        metrics["screen_stats"] = screen_metrics
+        metrics["window_first_timestamp_sec"] = float(
+            getattr(window_frames[0], "timestamp_sec", 0.0)
+        )
+        metrics["window_last_timestamp_sec"] = float(
+            getattr(window_frames[-1], "timestamp_sec", 0.0)
+        )
+
+        # 单帧也给结论：优先黑白屏，否则视为未恢复播放。
         if len(window_frames) < 2:
-            return (
-                False,
-                "evidence_insufficient",
-                "seek 后检测窗口内抽帧数量不足，无法确认播放恢复。",
-                {
-                    "window_start_sec": window_start,
-                    "window_end_sec": window_end,
-                    "window_frame_count": len(window_frames),
-                },
-            )
+            if screen_anomaly in {"black_screen", "white_screen"}:
+                text = "黑屏" if screen_anomaly == "black_screen" else "白屏"
+                return False, screen_anomaly, f"seek 后仅有单帧且为持续{text}，播放未正常恢复。", metrics
+            return False, "unknown", "seek 后仅有单帧且未见播放恢复证据，判定为播放异常。", metrics
 
         transitions = self._transition_metrics(window_frames)
         content_ratios = [float(item["content_change_ratio"]) for item in transitions]
@@ -227,25 +320,33 @@ class SeekPlaybackDetector:
             float(getattr(window_frames[-1], "timestamp_sec", 0.0))
             - float(getattr(window_frames[0], "timestamp_sec", 0.0)),
         )
-        screen_anomaly, screen_metrics = self._detect_black_white_tail(window_frames)
-        metrics: dict[str, Any] = {
-            "window_start_sec": window_start,
-            "window_end_sec": window_end,
-            "window_frame_count": len(window_frames),
-            "window_first_timestamp_sec": float(getattr(window_frames[0], "timestamp_sec", 0.0)),
-            "window_last_timestamp_sec": float(getattr(window_frames[-1], "timestamp_sec", 0.0)),
-            "window_duration_sec": duration_sec,
-            "content_change_ratios": content_ratios,
-            "full_change_ratios": full_ratios,
-            "content_change_stats": content_stats,
-            "full_change_stats": full_stats,
-            "screen_stats": screen_metrics,
-            "post_seek_transitions": transitions,
-        }
+        frozen_tail = self._frozen_tail_count(
+            content_ratios, self.static_max_change_threshold
+        )
+        metrics.update(
+            {
+                "window_duration_sec": duration_sec,
+                "content_change_ratios": content_ratios,
+                "full_change_ratios": full_ratios,
+                "content_change_stats": content_stats,
+                "full_change_stats": full_stats,
+                "frozen_tail_count": frozen_tail,
+                "post_seek_transitions": transitions,
+            }
+        )
 
         if screen_anomaly in {"black_screen", "white_screen"}:
             text = "黑屏" if screen_anomaly == "black_screen" else "白屏"
             return False, screen_anomaly, f"seek 后检测窗口末尾持续{text}，播放未正常恢复。", metrics
+
+        # seek 后先有变化、随后连续卡住：不能仅凭前半段 mean/max 判 pass。
+        if frozen_tail >= 2:
+            return (
+                False,
+                "no_response",
+                "seek 后画面先变化随后持续静止，播放未持续恢复。",
+                metrics,
+            )
 
         if (
             float(content_stats["mean"]) >= self.playback_mean_change_threshold
@@ -273,7 +374,7 @@ class SeekPlaybackDetector:
         ):
             return False, "no_response", "seek 后画面长期近乎静止，播放进度未体现恢复。", metrics
 
-        return False, "unknown", "seek 后未观察到明确的播放恢复证据，判定为播放异常或无法确认。", metrics
+        return False, "unknown", "seek 后未观察到明确的播放恢复证据，判定为播放异常。", metrics
 
     def detect(
         self,

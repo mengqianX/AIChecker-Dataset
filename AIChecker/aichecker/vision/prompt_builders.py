@@ -52,27 +52,31 @@ def _build_general_prompt(context: dict[str, Any]) -> PromptPack:
 
 
 def _build_loading_prompt(context: dict[str, Any]) -> PromptPack:
-    """长时间加载检测提示词。"""
-    task_intent = "检测页面是否处于异常长时间加载状态（疑似卡死或无反馈）。"
+    """长时间加载检测提示词（与 no_response 分离）。"""
+    task_intent = "检测页面是否卡在异常长时间加载态（转圈/骨架屏/进度条长期不结束）。"
     system_prompt = (
-        "你是资深移动端 GUI 质量专家，专门识别加载状态异常。"
+        "你是资深移动端 GUI 质量专家，专门识别异常长时间加载。"
+        "你将看到片段起始帧与结束帧。"
         "请严格输出 JSON，且只输出 JSON，不要包含任何额外文本。"
         "JSON 必须包含字段："
         "bug_detected(bool)、reason(str)、decision_basis(str)、"
-        "anomaly_type(str: no_response|black_screen|white_screen|garbled_screen|long_loading|none|unknown)。"
+        "anomaly_type(str: long_loading|black_screen|white_screen|garbled_screen|none|unknown)。"
+        "本任务不判断 no_response；无响应由独立检测项处理。"
     )
     user_prompt = (
-        "任务类型：loading（长时间加载检测）\n"
+        "任务类型：long_loading（长时间加载检测）\n"
         f"测试意图：{task_intent}\n"
         f"片段区间：{context['before_timestamp_sec']:.2f}s -> {context['after_timestamp_sec']:.2f}s\n"
-        "请重点判断是否存在以下问题：\n"
-        "1) 加载指示器长期不消失\n"
-        "2) 页面内容长时间不变化，疑似卡死\n"
-        "3) 明显转圈但无结果反馈\n"
-        "4) 出现黑屏或白屏\n"
-        "页面加载失败、请求失败、网络异常等失败提示由独立检测器处理，本任务不要输出 load_failed。\n"
-        "请输出异常类型 anomaly_type，并在 decision_basis 中给出判定依据。"
-        "若无异常，anomaly_type=none 且 bug_detected=false。"
+        "图1=片段起始，图2=片段结束。\n"
+        "\n"
+        "判定规则：\n"
+        "1) long_loading（bug_detected=true）：图2仍能明确看到转圈、骨架屏、进度条、加载中文案等加载态，且未见加载结果。\n"
+        "2) black_screen / white_screen / garbled_screen：按字面明显异常选择。\n"
+        "3) none（bug_detected=false）：图2已离开加载态，或从未出现加载态。\n"
+        "4) 证据不足：anomaly_type=unknown，bug_detected=false。\n"
+        "\n"
+        "不要输出 no_response / load_failed。"
+        "请在 decision_basis 写明图2是否仍处于加载动效/加载文案。"
     )
     return PromptPack(
         selected_prompt_type="loading",
@@ -82,31 +86,78 @@ def _build_loading_prompt(context: dict[str, Any]) -> PromptPack:
     )
 
 
+def _build_no_response_prompt(context: dict[str, Any]) -> PromptPack:
+    """无响应检测提示词（与 long_loading 分离）。"""
+    task_intent = "检测操作后目标区域/页面是否出现有效响应；若无稳定新状态则判无响应。"
+    system_prompt = (
+        "你是资深移动端 GUI 质量专家，专门识别点击/操作后无响应。"
+        "你将看到片段起始帧与结束帧（可能是全页或裁剪控件区）。"
+        "请严格输出 JSON，且只输出 JSON，不要包含任何额外文本。"
+        "JSON 必须包含字段："
+        "bug_detected(bool)、has_effective_response(bool)、reason(str)、decision_basis(str)、"
+        "anomaly_type(str: no_response|none|unknown)。"
+        "本任务不判断 long_loading；长时间加载由独立检测项处理。"
+    )
+    user_prompt = (
+        "任务类型：no_response（无响应检测）\n"
+        f"测试意图：{task_intent}\n"
+        f"片段区间：{context['before_timestamp_sec']:.2f}s -> {context['after_timestamp_sec']:.2f}s\n"
+        "图1=操作前（或片段起始），图2=片段结束。\n"
+        "\n"
+        "只回答一件事：图2相对图1是否形成了操作带来的稳定新状态。\n"
+        "1) 有有效响应：has_effective_response=true, bug_detected=false, anomaly_type=none\n"
+        "   - 页面跳转、列表/正文更新、按钮/开关切换后的新外观并保持、弹层出现/关闭等。\n"
+        "   - 操作成功后的结果页即使静止，也算已响应。\n"
+        "2) 无响应：has_effective_response=false, bug_detected=true, anomaly_type=no_response\n"
+        "   - 图2相对图1几乎同一状态，看不出稳定新结果；\n"
+        "   - 仅有按下高亮/涟漪/闪一下又回到原样，不算有效响应。\n"
+        "3) 证据不足：has_effective_response 可省略语义，anomaly_type=unknown, bug_detected=false。\n"
+        "\n"
+        "禁止输出 long_loading。即使看见加载动效，本任务也只根据“有无稳定业务结果”判断；"
+        "加载动效本身既不能单独证明已响应，也不要改报成 long_loading。\n"
+        "请在 decision_basis 写明图2相对图1是否形成稳定新状态。"
+    )
+    return PromptPack(
+        selected_prompt_type="no_response",
+        task_intent=task_intent,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+
+
 def build_loading_failure_probe_prompt(context: dict[str, Any]) -> PromptPack:
     """loading 失败文案探测提示词（用于 detector 内部子步骤）。"""
-    task_intent = "观察当前候选帧是否出现加载失败相关文案，以及候选后帧是否恢复业务内容。"
+    task_intent = "观察候选帧是否出现加载/请求失败提示，以及后帧是否已回到可用业务界面。"
     system_prompt = (
-        "你是移动端 GUI 失败态识别专家。"
-        "请根据前后截图提取页面加载失败相关的视觉观察，不要自行做最终检测器判定。"
-        "请严格输出 JSON，且只输出 JSON。"
-        "不要输出空 JSON。"
+        "你是移动端 GUI 观察员，只输出结构化观察，不做最终 bug 判定。"
+        "请严格输出 JSON，且只输出 JSON，不要输出空 JSON。"
         "JSON 必须包含字段："
         "failure_text_visible(bool), evidence_text(str), page_recovered(bool), visual_state(str), "
         "confidence(number,0~1), reason(str)。"
         "visual_state 只能取 normal|blank|skeleton|black|loading|unknown。"
-        "failure_text_visible 仅表示图2或图3是否有明确失败文案或失败弹窗。"
-        "不要输出 load_failed、failure_type、anomaly_type 或 bug_detected；最终判定由检测器完成。"
+        "不要输出 load_failed、failure_type、anomaly_type 或 bug_detected。"
     )
     user_prompt = (
         "任务类型：loading_failure_probe\n"
         f"任务意图：{task_intent}\n"
         f"片段区间：{context['before_timestamp_sec']:.2f}s -> {context['after_timestamp_sec']:.2f}s\n"
-        "图1是候选前帧，图2是候选帧，图3是候选后帧。\n"
-        "请只检查图2或图3是否有明确失败文案或失败弹窗，例如加载失败、请求失败、网络异常、超时、重试提示、错误弹窗。\n"
-        "如果看到明确失败文案，请 failure_text_visible=true，并把原文写入 evidence_text。\n"
-        "如果没有明确失败文案，请 failure_text_visible=false，evidence_text=\"\"。\n"
-        "如果图3已经恢复出商品、列表、购物车、消息等可用业务内容，请 page_recovered=true；否则 false。\n"
-        "请用 visual_state 描述候选帧/后帧的主要状态；空白页、骨架屏、黑屏、加载动画只是视觉状态，不是最终失败类型。"
+        "图1=候选前帧，图2=候选帧，图3=候选后帧。\n"
+        "\n"
+        "按主文案语义判断（有弹窗/有重试按钮本身不构成失败）：\n"
+        "- failure_text_visible=true：主语义是失败了"
+        "（网络/服务/请求/加载失败、超时、出错、无法连接、出了点问题等）；"
+        "evidence_text 填失败原文。\n"
+        "- failure_text_visible=false：主语义不是失败"
+        "（没搜到/暂无数据、成就运营、聊天、普通确认等）；evidence_text=\"\"。\n"
+        "\n"
+        "对照：无法连接/服务异常/出了点问题 → true；"
+        "没有符合条件/还没有内容（即使有重试）→ false。\n"
+        "\n"
+        "page_recovered：仅当图3主内容已是可用业务界面，且失败主文案不再占据主内容时为 true。"
+        "若图2或图3仍显示失败主文案，page_recovered 必须为 false"
+        "（标题栏/Tab/底部导航不算已恢复）。\n"
+        "正常空结果页（没有符合条件/还没有内容）算已恢复，page_recovered=true。\n"
+        "visual_state 描述外观；reason 一句话说明主语义。"
     )
     return PromptPack(
         selected_prompt_type="loading_failure_probe",
@@ -250,6 +301,7 @@ def _build_list_refresh_prompt(context: dict[str, Any]) -> PromptPack:
 PROMPT_BUILDERS: dict[str, Callable[[dict[str, Any]], PromptPack]] = {
     "general": _build_general_prompt,
     "loading": _build_loading_prompt,
+    "no_response": _build_no_response_prompt,
     "toast": _build_toast_prompt,
     "count_change": _build_count_change_prompt,
     "list_refresh": _build_list_refresh_prompt,

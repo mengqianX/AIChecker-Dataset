@@ -24,6 +24,7 @@ from testagent_case_utils import (
     extract_expected_passed,
     extract_video_frames,
     load_case,
+    record_cli_report_metrics,
     require_testagent_root,
     set_checker_report_meta,
 )
@@ -128,6 +129,9 @@ def test_video_play_from_testagent_case(case_json_path: Path, request: pytest.Fi
         request,
         actual_passed=actual_passed,
         anomaly_type=result.anomaly_type,
+        detect_elapsed_ms=(result.timing or {}).get("elapsed_ms", ""),
+        prompt_call_count=0,
+        total_tokens=0,
     )
 
     assert actual_passed == expected_passed, (
@@ -172,6 +176,7 @@ def test_video_play_from_testagent_case_via_cli(case_json_path: Path, request: p
     assert report.get("input", {}).get("task_type") == "video_play"
     actual_passed, source = _resolve_video_play_pass(report)
     set_checker_report_meta(request, actual_passed=actual_passed, anomaly_type=source)
+    record_cli_report_metrics(request, report)
 
     assert actual_passed == expected_passed, (
         f"{case_json_path.name}: expected_passed={expected_passed}, actual_passed={actual_passed}, "

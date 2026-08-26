@@ -28,6 +28,7 @@ from testagent_case_utils import (
     collect_case_jsons,
     extract_expected_passed,
     extract_video_frames,
+    record_evaluator_token_usage,
     require_testagent_root,
     resolve_path,
     set_checker_report_meta,
@@ -150,6 +151,7 @@ def test_toast_from_testagent_case(case_json_path: Path, request: pytest.Fixture
         expectation_met=result.expectation_met,
         key_frame_timestamp=result.key_frame_timestamp,
     )
+    record_evaluator_token_usage(request, detector.evaluator)
 
     assert actual_passed == expected_passed, (
         f"{case_json_path.name}: expected_passed={expected_passed}, actual_passed={actual_passed}, "

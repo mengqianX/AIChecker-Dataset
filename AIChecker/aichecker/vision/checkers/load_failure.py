@@ -36,10 +36,25 @@ class LoadFailurePromptDetector:
     """检测控件响应后是否出现加载失败相关提示或弹窗。"""
 
     _TEXT_FAILURE_TYPES: tuple[tuple[str, tuple[str, ...]], ...] = (
-        ("network_error", ("网络异常", "网络错误", "网络不给力", "网络连接", "network")),
-        ("request_failed", ("请求失败", "加载失败", "获取失败", "访问失败", "失败", "error")),
+        ("network_error", ("网络异常", "网络错误", "网络不给力", "网络连接", "无法连接", "连接到网络", "network")),
+        ("request_failed", ("请求失败", "加载失败", "获取失败", "访问失败", "失败", "出错", "出了点问题", "error")),
         ("timeout", ("超时", "timeout", "timed out")),
         ("permission_denied", ("权限", "无权限", "permission", "denied", "unauthorized")),
+    )
+    # Deny-list only: block known non-failure overlays / empty-result states.
+    _NON_FAILURE_EVIDENCE_MARKERS: tuple[str, ...] = (
+        "累计阅读",
+        "恭喜",
+        "成就",
+        "抽大奖",
+        "礼包",
+        "获得徽章",
+        "没有符合条件",
+        "还没有内容",
+        "暂无数据",
+        "暂无内容",
+        "暂无记录",
+        "空空如也",
     )
 
     def __init__(
@@ -116,7 +131,13 @@ class LoadFailurePromptDetector:
         filtered = [item for item in prefilter_scores if float(item["cv_score"]) >= self.probe_min_cv_score]
         if len(filtered) < self.probe_force_keep:
             filtered = prefilter_scores[: self.probe_force_keep]
-        return [int(item["index"]) for item in filtered[: self.probe_top_k]]
+        selected = [int(item["index"]) for item in filtered[: self.probe_top_k]]
+        # Always keep the earliest candidate so entry toasts are not dropped by CV ranking.
+        if prefilter_scores:
+            first_idx = min(int(item["index"]) for item in prefilter_scores)
+            if first_idx not in selected:
+                selected = sorted(set(selected) | {first_idx})
+        return selected
 
     def _detect_persistent_visual_failure(self, sampled_frames: list[Any]) -> dict[str, Any]:
         """Detect sustained blank/black tail states that VLMs often describe inconsistently."""
@@ -220,31 +241,91 @@ class LoadFailurePromptDetector:
         )
         return any(marker in normalized for marker in markers)
 
-    def _normalize_probe_result(self, result: dict[str, Any]) -> dict[str, Any]:
-        """Convert VLM observations into detector-owned failure decisions."""
+    @staticmethod
+    def _reason_denies_failure_text(text: str) -> bool:
+        """Detect VLM reasons that explicitly deny failure-prompt evidence."""
 
-        observation_text = "\n".join(
-            [
-                str(result.get("evidence_text", "")),
-                str(result.get("reason", "")),
-            ]
+        normalized = text.strip()
+        if not normalized:
+            return False
+        markers = (
+            "未显示任何明确的失败",
+            "未出现明确的失败文案",
+            "未出现加载失败相关文案",
+            "无任何失败提示",
+            "未见失败文案",
+            "没有明确失败文案",
+            "未出现明确的失败文案或错误弹窗",
+            "均未显示任何明确的失败文案",
+            "无任何失败提示或错误弹窗",
         )
+        return any(marker in normalized for marker in markers)
+
+    @staticmethod
+    def _resolve_failure_type_from_observation(
+        *,
+        text_failure_type: str,
+        failure_text_visible: bool,
+    ) -> str:
+        """Map observation fields to a failure_type; keywords are classification-only."""
+
+        if text_failure_type != "none":
+            return text_failure_type
+        if failure_text_visible:
+            return "request_failed"
+        return "request_failed"
+
+    def _normalize_probe_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Convert VLM observations into detector-owned failure decisions.
+
+        Primary gate trusts VLM failure_text_visible (+ page_recovered).
+        Keywords only classify failure_type. Persistent blank/skeleton/black without
+        failure copy is handled by CV visual_failure.
+        """
+
+        evidence_text = str(result.get("evidence_text", "")).strip()
+        reason_text = str(result.get("reason", "")).strip()
+        observation_text = "\n".join([evidence_text, reason_text])
         failure_text_visible = bool(result.get("failure_text_visible"))
         page_recovered = bool(result.get("page_recovered"))
-        text_failure_type = self._classify_failure_text(str(result.get("evidence_text", "")))
-        if text_failure_type == "none" and failure_text_visible:
+        visual_state = str(result.get("visual_state", "unknown")).strip().lower() or "unknown"
+        text_failure_type = self._classify_failure_text(evidence_text)
+        if text_failure_type == "none":
             text_failure_type = self._classify_failure_text(observation_text)
         text_says_normal = self._text_says_recovered_or_normal(observation_text)
 
-        normalized_load_failed = text_failure_type != "none" and not page_recovered
-        normalized_failure_type = text_failure_type if normalized_load_failed else "none"
-        normalization_reason = (
-            f"VLM 观察文本命中失败语义，归一化为 {normalized_failure_type}。"
-            if normalized_load_failed
-            else "VLM 观察文本未命中明确失败语义，归一化为 none。"
-        )
-        if page_recovered and text_failure_type != "none":
+        # Only drop structurally inconsistent / clearly non-failure claims.
+        if failure_text_visible and not evidence_text:
+            failure_text_visible = False
+        if failure_text_visible and self._reason_denies_failure_text(reason_text):
+            failure_text_visible = False
+        if failure_text_visible and any(
+            marker in evidence_text for marker in self._NON_FAILURE_EVIDENCE_MARKERS
+        ):
+            failure_text_visible = False
+        # Persistent empty/error-looking frames with failure copy are not "recovered"
+        # just because chrome/tabs remain.
+        if (
+            failure_text_visible
+            and page_recovered
+            and visual_state in {"blank", "skeleton", "black"}
+        ):
+            page_recovered = False
+
+        observation_says_failed = failure_text_visible
+        normalized_load_failed = observation_says_failed and not page_recovered
+        if normalized_load_failed:
+            normalized_failure_type = self._resolve_failure_type_from_observation(
+                text_failure_type=text_failure_type,
+                failure_text_visible=failure_text_visible,
+            )
+            normalization_reason = f"VLM 观察到失败文案/弹窗，归一化为 {normalized_failure_type}。"
+        elif page_recovered and bool(result.get("failure_text_visible")):
+            normalized_failure_type = "none"
             normalization_reason = "VLM 观察到后帧已恢复业务内容，按短暂加载/提示处理，归一化为 none。"
+        else:
+            normalized_failure_type = "none"
+            normalization_reason = "VLM 未观察到明确失败文案/弹窗，归一化为 none。"
 
         legacy_model_load_failed = result.get("model_load_failed")
         legacy_model_failure_type = str(result.get("model_failure_type", "unknown")).strip().lower() or "unknown"
@@ -261,10 +342,13 @@ class LoadFailurePromptDetector:
             {
                 "load_failed": normalized_load_failed,
                 "failure_type": normalized_failure_type,
+                "failure_text_visible": failure_text_visible,
+                "page_recovered": page_recovered,
                 "normalization_reason": normalization_reason,
                 "inconsistent_output": inconsistent_output,
                 "text_says_normal": text_says_normal,
                 "text_failure_type": text_failure_type,
+                "observation_says_failed": observation_says_failed,
             }
         )
         return normalized
@@ -296,9 +380,8 @@ class LoadFailurePromptDetector:
 
         failure_text_visible = self._bool_from_parsed(parsed, "failure_text_visible", False)
         if not has_new_schema and legacy_load_failed is not None:
-            failure_text_visible = bool(legacy_load_failed) and self._classify_failure_text(
-                f"{evidence_text}\n{reason}"
-            ) != "none"
+            # Legacy responses decided load_failed themselves; preserve that as an observation signal.
+            failure_text_visible = bool(legacy_load_failed)
 
         page_recovered = self._bool_from_parsed(parsed, "page_recovered", False)
         visual_state = str(parsed.get("visual_state", "unknown")).strip().lower() or "unknown"
@@ -433,18 +516,26 @@ class LoadFailurePromptDetector:
 
         recovery_after_hit = None
         if best_hit is not None and not bool(visual_failure.get("detected")):
-            later_non_failure_results = [
-                item
-                for item in all_results
-                if int(item["candidate_index"]) > int(best_hit["candidate_index"]) and not bool(item["load_failed"])
-            ]
-            if later_non_failure_results:
-                recovery_after_hit = sorted(
-                    later_non_failure_results,
-                    key=lambda item: (int(item["candidate_index"]), float(item["center_ts"])),
-                    reverse=True,
-                )[0]
-                best_hit = None
+            # Failure text/toast hits remain bugs even if a later frame looks recovered.
+            # Only non-text visual hits may be cleared by later recovery.
+            hit_had_failure_text = bool(best_hit.get("failure_text_visible"))
+            if not hit_had_failure_text:
+                later_recovery_results = [
+                    item
+                    for item in all_results
+                    if int(item["candidate_index"]) > int(best_hit["candidate_index"])
+                    and bool(item.get("page_recovered"))
+                    and not bool(item.get("failure_text_visible"))
+                    and str(item.get("visual_state", "")).strip().lower() == "normal"
+                    and not bool(item["load_failed"])
+                ]
+                if later_recovery_results:
+                    recovery_after_hit = sorted(
+                        later_recovery_results,
+                        key=lambda item: (int(item["candidate_index"]), float(item["center_ts"])),
+                        reverse=True,
+                    )[0]
+                    best_hit = None
 
         visual_failure_detected = bool(visual_failure.get("detected"))
         bug_detected = best_hit is not None or visual_failure_detected

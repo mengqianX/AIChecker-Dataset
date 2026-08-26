@@ -34,6 +34,59 @@ except ImportError:
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 HISTORY_DIR = REPO_ROOT / "reports" / "history"
 
+RESULT_FIELDNAMES = [
+    "run_id",
+    "run_at",
+    "git_commit",
+    "checker",
+    "app",
+    "case_id",
+    "case_file",
+    "template_image",
+    "target_image",
+    "threshold",
+    "expected_passed",
+    "expected_bounds",
+    "actual_passed",
+    "status",
+    "similarity",
+    "actual_bounds",
+    "error",
+    "duration_sec",
+    "prompt_call_count",
+    "calls_with_usage",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "detect_elapsed_ms",
+    "preview_template_image",
+    "preview_target_image",
+    "preview_match_result_image",
+    "preview_button_before_image",
+    "preview_button_after_image",
+]
+
+RUN_FIELDNAMES = [
+    "run_id",
+    "run_at",
+    "branch",
+    "commit",
+    "note",
+    "checker",
+    "case_count",
+    "executed_count",
+    "skipped_count",
+    "total_duration_sec",
+    "avg_duration_sec",
+    "total_prompt_calls",
+    "cases_with_llm",
+    "total_prompt_tokens",
+    "total_completion_tokens",
+    "total_tokens",
+    "avg_tokens_per_case",
+    "avg_tokens_per_llm_case",
+]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -113,6 +166,8 @@ def _checker_from_test_path(test_path: str) -> str | None:
         return "count_change"
     if "test_progress_cases.py" in test_path:
         return "progress_change"
+    if "test_toggle_cases.py" in test_path:
+        return "toggle"
     if "test_black_white_screen_cases.py" in test_path:
         return "black_white_screen"
     if "test_no_response_cases.py" in test_path:
@@ -121,6 +176,10 @@ def _checker_from_test_path(test_path: str) -> str | None:
         return "long_loading"
     if "test_page_load_failure_cases.py" in test_path:
         return "page_load_failure"
+    if "test_list_refresh_cases.py" in test_path:
+        return "list_refresh"
+    if "test_seek_playback_cases.py" in test_path:
+        return "seek_playback"
     if "test_toast_cases.py" in test_path:
         return "toast"
     if "test_video_play_cases.py" in test_path:
@@ -134,6 +193,80 @@ def _runs_csv_for_checker(checker: str) -> Path:
 
 def _results_csv_for_checker(checker: str) -> Path:
     return HISTORY_DIR / checker / "test_case_results.csv"
+
+
+def _as_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int(value: Any) -> int:
+    if value is None or value == "":
+        return 0
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _aggregate_checker_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    executed = [r for r in rows if str(r.get("actual_passed", "")) != "跳过(SKIPPED)"]
+    skipped_count = len(rows) - len(executed)
+    durations = [_as_float(r.get("duration_sec")) for r in executed]
+    durations = [d for d in durations if d is not None]
+    total_duration = sum(durations) if durations else 0.0
+    avg_duration = (total_duration / len(durations)) if durations else 0.0
+
+    total_prompt_calls = sum(_as_int(r.get("prompt_call_count")) for r in executed)
+    total_prompt_tokens = sum(_as_int(r.get("prompt_tokens")) for r in executed)
+    total_completion_tokens = sum(_as_int(r.get("completion_tokens")) for r in executed)
+    total_tokens = sum(_as_int(r.get("total_tokens")) for r in executed)
+    cases_with_llm = sum(1 for r in executed if _as_int(r.get("prompt_call_count")) > 0)
+
+    return {
+        "case_count": len(rows),
+        "executed_count": len(executed),
+        "skipped_count": skipped_count,
+        "total_duration_sec": round(total_duration, 3),
+        "avg_duration_sec": round(avg_duration, 3),
+        "total_prompt_calls": total_prompt_calls,
+        "cases_with_llm": cases_with_llm,
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+        "total_tokens": total_tokens,
+        "avg_tokens_per_case": round(total_tokens / len(executed), 2) if executed else 0.0,
+        "avg_tokens_per_llm_case": (
+            round(total_tokens / cases_with_llm, 2) if cases_with_llm else 0.0
+        ),
+    }
+
+
+def _print_runtime_summary(by_checker: Dict[str, List[Dict[str, Any]]]) -> None:
+    if not by_checker:
+        return
+    print("\n======== Checker Runtime / Token Summary ========")
+    print("注: avg_tok_llm = 仅对真正调用了 LLM 的用例求平均；avg_tok_all = 总token/全部执行用例(含0)")
+    header = (
+        f"{'checker':<22} {'n':>4} {'exec':>4} {'skip':>4} "
+        f"{'total_s':>9} {'avg_s':>8} {'llm':>4} {'calls':>6} "
+        f"{'tok_total':>10} {'avg_tok_llm':>11} {'avg_tok_all':>11}"
+    )
+    print(header)
+    print("-" * len(header))
+    for checker in sorted(by_checker):
+        stats = _aggregate_checker_rows(by_checker[checker])
+        print(
+            f"{checker:<22} {stats['case_count']:4d} {stats['executed_count']:4d} "
+            f"{stats['skipped_count']:4d} {stats['total_duration_sec']:9.2f} "
+            f"{stats['avg_duration_sec']:8.2f} {stats['cases_with_llm']:4d} "
+            f"{stats['total_prompt_calls']:6d} {stats['total_tokens']:10d} "
+            f"{stats['avg_tokens_per_llm_case']:11.1f} {stats['avg_tokens_per_case']:11.1f}"
+        )
+    print("=================================================\n")
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -200,6 +333,10 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[Any]):
             actual_text = "通过(Pass)"
         error_text = ""
 
+    duration_sec = ""
+    if getattr(call, "duration", None) is not None:
+        duration_sec = f"{float(call.duration):.4f}"
+
     status = _status_from_expected_actual(expected_text, actual_text)
     row = {
         "run_id": run_meta["run_id"],
@@ -219,6 +356,13 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[Any]):
         "similarity": similarity,
         "actual_bounds": actual_bounds,
         "error": error_text.replace("\n", " "),
+        "duration_sec": duration_sec,
+        "prompt_call_count": meta.get("prompt_call_count", ""),
+        "calls_with_usage": meta.get("calls_with_usage", ""),
+        "prompt_tokens": meta.get("prompt_tokens", ""),
+        "completion_tokens": meta.get("completion_tokens", ""),
+        "total_tokens": meta.get("total_tokens", ""),
+        "detect_elapsed_ms": meta.get("detect_elapsed_ms", ""),
         "preview_template_image": meta.get("preview_template_image", ""),
         "preview_target_image": meta.get("preview_target_image", ""),
         "preview_match_result_image": meta.get("preview_match_result_image", ""),
@@ -243,9 +387,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         by_checker.setdefault(checker, []).append(row)
 
     for checker, checker_rows in by_checker.items():
+        stats = _aggregate_checker_rows(checker_rows)
         _append_rows(
             _runs_csv_for_checker(checker),
-            ["run_id", "run_at", "branch", "commit", "note", "checker", "case_count"],
+            RUN_FIELDNAMES,
             [
                 {
                     "run_id": run_meta["run_id"],
@@ -254,35 +399,14 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
                     "commit": run_meta["commit"],
                     "note": "pytest session",
                     "checker": checker,
-                    "case_count": len(checker_rows),
+                    **stats,
                 }
             ],
         )
         _append_rows(
             _results_csv_for_checker(checker),
-            [
-                "run_id",
-                "run_at",
-                "git_commit",
-                "checker",
-                "app",
-                "case_id",
-                "case_file",
-                "template_image",
-                "target_image",
-                "threshold",
-                "expected_passed",
-                "expected_bounds",
-                "actual_passed",
-                "status",
-                "similarity",
-                "actual_bounds",
-                "error",
-                "preview_template_image",
-                "preview_target_image",
-                "preview_match_result_image",
-                "preview_button_before_image",
-                "preview_button_after_image",
-            ],
+            RESULT_FIELDNAMES,
             checker_rows,
         )
+
+    _print_runtime_summary(by_checker)
