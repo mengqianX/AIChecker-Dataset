@@ -1,7 +1,7 @@
 """
 基于 TestAgent/testcase/toast 的用例，验证 AIChecker ToastMessageDetector。
 
-该检测依赖 VLM 语义判定，需要通过 .env 或环境变量配置 VLM backend。
+该检测依赖 VLM 语义判定，需要通过 .env 或环境变量配置 VLM。
 
 运行：
   AIChecker/.venv/bin/python -m pytest AIChecker/tests/regression/test_toast_cases.py -q
@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 from aichecker.vision.checkers.toast import ToastMessageDetector
-from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_backend_config
+from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_config
 from aichecker.vision.preprocessor import GuiPreprocessor
 from testagent_case_utils import (
     REPO_ROOT,
@@ -77,17 +77,16 @@ def load_toast_case(json_path: Path) -> dict[str, Any]:
 
 
 def _build_toast_detector() -> ToastMessageDetector:
-    backend_config = resolve_vlm_backend_config()
-    if not backend_config.api_key:
+    vlm_config = resolve_vlm_config()
+    if not vlm_config.api_key:
         pytest.skip("VLM API key is required for toast regression tests")
 
     logger = logging.getLogger("test_toast")
     debug_dir = REPO_ROOT / "AIChecker" / "debug" / "toast_regression"
     evaluator = VisionEvaluator(
-        api_key=backend_config.api_key,
-        model=backend_config.model,
-        base_url=backend_config.base_url,
-        backend=backend_config.backend,
+        api_key=vlm_config.api_key,
+        model=vlm_config.model,
+        base_url=vlm_config.base_url,
         logger=logger,
         debug=_truthy_env("VGA_DEBUG", "0"),
     )

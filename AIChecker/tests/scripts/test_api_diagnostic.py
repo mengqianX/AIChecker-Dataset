@@ -1,34 +1,28 @@
 #!/usr/bin/env python3
 """
 通用 API 诊断脚本
-支持测试 Qwen、UI-TARS 等 OpenAI 兼容的多模态 API。
+支持测试任意 OpenAI-compatible 多模态 API。
 
 用法:
-  # 使用 Qwen (DashScope)
-  python api_diagnostic.py --backend qwen --model qwen-vl-max
+  # 使用环境变量（OPENAI_* / AICHECKER_VLM_* 或旧的 QWEN_* / MAI_UI_*）
+  python test_api_diagnostic.py --test-connection-only
 
-  # 使用 UI-TARS (HuggingFace Inference Endpoints)
-  python api_diagnostic.py --backend ui-tars \
-    --base-url "https://xxx.inference.endpoints.huggingface.cloud/v1" \
-    --model "ByteDance-Seed/UI-TARS-1.5-7B"
-
-  # 使用 MAI-UI (Tongyi-MAI)
-  python test_api_diagnostic.py --backend mai-ui
+  # 显式指定连接参数
+  python test_api_diagnostic.py --base-url "https://xxx/v1" --model "qwen-vl-max" --api-key sk-xxx
 
   # 使用 payload JSON 文件
   python test_api_diagnostic.py --payload testcase/count_change/jsons/Android/sample_comment.json
-
-  # 简单连接测试（不测试 count_change）
-  python test_api_diagnostic.py --backend qwen --test-connection-only
 """
 import argparse
 import base64
 import json
-import os
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from aichecker.vision.evaluator import resolve_vlm_config
 
 try:
     from openai import OpenAI
@@ -123,49 +117,6 @@ def extract_json(text: str) -> dict:
             return json.loads(m.group(1))
         raise ValueError(f"Cannot extract JSON from: {text[:300]}...")
     return json.loads(text[start:end])
-
-
-def resolve_backend_config(
-    backend: str,
-    base_url: Optional[str] = None,
-    model: Optional[str] = None,
-    api_key: Optional[str] = None,
-) -> tuple[str, str, str]:
-    """根据 backend 解析配置
-    
-    支持的 qwen 模型：
-    - qwen-vl-max (默认，最强模型)
-    - qwen-vl-plus
-    - qwen-vl-7b (小模型)
-    可通过 QWEN_MODEL 环境变量或 --model 参数指定
-    """
-    backend = (backend or "qwen").strip().lower()
-
-    if backend == "qwen":
-        base_url = base_url or os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-        # 默认使用 qwen-vl-max，可通过 QWEN_MODEL 或 --model 指定其他模型（如 qwen-vl-7b）
-        model = model or os.getenv("QWEN_MODEL", "qwen-vl-max")
-        api_key = api_key or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("请设置 DASHSCOPE_API_KEY 或 OPENAI_API_KEY")
-        return base_url, model, api_key
-
-    elif backend == "ui-tars":
-        base_url = base_url or os.getenv("UI_TARS_BASE_URL")
-        if not base_url:
-            raise ValueError("请设置 UI_TARS_BASE_URL 或 --base-url")
-        model = model or os.getenv("UI_TARS_MODEL", "ui-tars")
-        api_key = api_key or os.getenv("UI_TARS_API_KEY") or os.getenv("HF_TOKEN", "dummy")
-        return base_url, model, api_key
-
-    elif backend == "mai-ui":
-        base_url = base_url or os.getenv("MAI_UI_BASE_URL", "https://notebook-inspire.sii.edu.cn/ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6/project-36ace45a-ca9d-4038-a1ee-31005934c852/user-9cf8e66e-8726-42ab-9eeb-3a458295c571/vscode/86a2108b-57cd-4e9d-8b5b-c0b5ae5cb45a/6af74476-37cd-47bb-98dd-7eeca5cba313/proxy/8000/v1")
-        model = model or os.getenv("MAI_UI_MODEL", "Tongyi-MAI/MAI-UI-8B")
-        api_key = api_key or os.getenv("MAI_UI_API_KEY") or os.getenv("HF_TOKEN", "dummy")
-        return base_url, model, api_key
-
-    else:
-        raise ValueError(f"不支持的 backend: {backend}. 支持: qwen, ui-tars, mai-ui")
 
 
 def test_connection(base_url: str, api_key: str, model: str) -> bool:
@@ -322,8 +273,6 @@ def main():
         choices=["count_change", "image_match"],
         help="测试任务类型: count_change(默认) 或 image_match",
     )
-    parser.add_argument("--backend", type=str, default=os.getenv("COUNT_CHANGE_BACKEND", "qwen"),
-                       help="后端类型: qwen (默认 qwen-vl-max), ui-tars, 或 mai-ui")
     parser.add_argument("--base-url", type=str, help="API base URL")
     parser.add_argument("--api-key", type=str, help="API key")
     parser.add_argument("--model", type=str, help="模型名")
@@ -336,19 +285,18 @@ def main():
     parser.add_argument("--stream", action="store_true", help="使用流式响应")
     args = parser.parse_args()
 
-    # 解析后端配置
-    try:
-        base_url, model, api_key = resolve_backend_config(
-            backend=args.backend,
-            base_url=args.base_url,
-            model=args.model,
-            api_key=args.api_key,
-        )
-    except ValueError as e:
-        print(f"❌ 配置错误: {e}")
+    vlm_config = resolve_vlm_config(
+        api_key=args.api_key,
+        model=args.model,
+        base_url=args.base_url,
+    )
+    base_url = vlm_config.base_url
+    model = vlm_config.model
+    api_key = vlm_config.api_key
+    if not api_key:
+        print("❌ 配置错误: 未读取到 API key，请设置 OPENAI_API_KEY / AICHECKER_VLM_API_KEY 或 --api-key")
         sys.exit(1)
 
-    print(f"后端: {args.backend}")
     print(f"base_url: {base_url}")
     print(f"model: {model}")
     print(f"api_key: {'*' * 10 if api_key else '未设置'}")

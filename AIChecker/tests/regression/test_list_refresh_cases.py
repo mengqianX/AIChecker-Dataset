@@ -1,7 +1,7 @@
 """
 基于 TestAgent/testcase/content_list_refresh 的用例，验证 AIChecker ListRefreshDetector。
 
-该检测依赖 VLM 语义判定，需要通过 .env 或环境变量配置 VLM backend。
+该检测依赖 VLM 语义判定，需要通过 .env 或环境变量配置 VLM。
 
 运行：
   AIChecker/.venv/bin/python -m pytest AIChecker/tests/regression/test_list_refresh_cases.py -q
@@ -28,7 +28,7 @@ import pytest
 
 from aichecker.vision.checkers.count_change import ControlBounds
 from aichecker.vision.checkers.list_refresh import ListRefreshDetector
-from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_backend_config
+from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_config
 from testagent_case_utils import (
     REPO_ROOT,
     collect_case_jsons,
@@ -93,17 +93,16 @@ def _resolve_image_pair(payload: dict[str, Any]) -> tuple[Path, Path]:
 
 
 def _build_list_refresh_detector(case_id: str) -> ListRefreshDetector:
-    backend_config = resolve_vlm_backend_config()
-    if not backend_config.api_key:
+    vlm_config = resolve_vlm_config()
+    if not vlm_config.api_key:
         pytest.skip("VLM API key is required for list_refresh regression tests")
 
     logger = logging.getLogger("test_list_refresh")
     debug_dir = REPO_ROOT / "AIChecker" / "debug" / "list_refresh_regression" / case_id
     evaluator = VisionEvaluator(
-        api_key=backend_config.api_key,
-        model=backend_config.model,
-        base_url=backend_config.base_url,
-        backend=backend_config.backend,
+        api_key=vlm_config.api_key,
+        model=vlm_config.model,
+        base_url=vlm_config.base_url,
         logger=logger,
         debug=_truthy_env("VGA_DEBUG", "0"),
     )

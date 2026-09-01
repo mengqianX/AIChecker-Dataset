@@ -2,7 +2,7 @@
 基于 TestAgent/testcase/long_loading 的用例，验证 AIChecker LoadingDetector 的长时间加载检测。
 
 CV 明确时只走帧间变化信号；CV 不确定时会回退到真实 VLM。
-需要通过 .env 或环境变量配置 VLM backend。
+需要通过 .env 或环境变量配置 VLM。
 
 运行：
   AIChecker/.venv/bin/python -m pytest AIChecker/tests/regression/test_long_loading_cases.py -q
@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from aichecker.vision.checkers.loading import LoadingDetector
-from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_backend_config
+from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_config
 from testagent_case_utils import (
     collect_case_jsons,
     extract_expected_passed,
@@ -37,16 +37,15 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 
 def _build_loading_detector() -> LoadingDetector:
-    backend_config = resolve_vlm_backend_config()
-    if not backend_config.api_key:
+    vlm_config = resolve_vlm_config()
+    if not vlm_config.api_key:
         pytest.skip("VLM API key is required for long_loading regression tests")
 
     logger = logging.getLogger("test_long_loading")
     evaluator = VisionEvaluator(
-        api_key=backend_config.api_key,
-        model=backend_config.model,
-        base_url=backend_config.base_url,
-        backend=backend_config.backend,
+        api_key=vlm_config.api_key,
+        model=vlm_config.model,
+        base_url=vlm_config.base_url,
         logger=logger,
         debug=_truthy_env("VGA_DEBUG", "0"),
     )

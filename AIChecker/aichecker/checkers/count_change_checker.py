@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from ..models import Bounds, CheckResult, ControlInfo
 from ..vision.checkers.count_change import ControlBounds, CountChangeDetector
-from ..vision.evaluator import VisionEvaluator, resolve_vlm_backend_config
+from ..vision.evaluator import VisionEvaluator, resolve_vlm_config
 from ..vision.preprocessor import GuiPreprocessor
 
 
@@ -46,29 +46,12 @@ def _build_api_error_result(bounds: Bounds, error: BaseException) -> CheckResult
     )
 
 
-def _resolve_backend_config(
-    backend: Optional[str],
-    api_key: Optional[str],
-    model: Optional[str],
-    base_url: Optional[str],
-) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
-    config = resolve_vlm_backend_config(
-        backend=backend,
-        api_key=api_key,
-        model=model,
-        base_url=base_url,
-        default_backend="qwen",
-    )
-    return config.backend, config.api_key, config.model, config.base_url
-
-
 def check_count_change(
     payload: Dict[str, Any],
     debug_dir: Path | None = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     base_url: Optional[str] = None,
-    backend: Optional[str] = None,
 ) -> CheckResult:
     """Detect whether a target control caused the expected related count change."""
     screenshot_a = payload.get("screenshot_a") or payload.get("before_image")
@@ -80,12 +63,14 @@ def check_count_change(
     control_bounds = ControlBounds.from_list(list(bounds.as_box()))
     debug_root = Path(debug_dir) if debug_dir else None
     logger = logging.getLogger("aichecker.vision.count_change")
-    resolved_backend, resolved_api_key, resolved_model, resolved_base_url = _resolve_backend_config(
-        backend=backend or payload.get("backend"),
+    vlm_config = resolve_vlm_config(
         api_key=api_key or payload.get("api_key"),
         model=model or payload.get("model"),
         base_url=base_url or payload.get("base_url"),
     )
+    resolved_api_key = vlm_config.api_key
+    resolved_model = vlm_config.model
+    resolved_base_url = vlm_config.base_url
 
     evaluator = VisionEvaluator(
         api_key=resolved_api_key,
@@ -145,7 +130,6 @@ def check_count_change(
     )
     details: Dict[str, Any] = {
         "method": "vision_count_change",
-        "backend": resolved_backend,
         "model": resolved_model or "gpt-4o",
         "base_url": resolved_base_url,
         "semantic_target": result.semantic_target,

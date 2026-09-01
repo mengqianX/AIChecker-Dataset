@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from aichecker.checkers import check_count_change
 from aichecker.utils import _encode
-from aichecker.vision.evaluator import resolve_vlm_backend_config
+from aichecker.vision.evaluator import resolve_vlm_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 TESTCASE_DIR = REPO_ROOT / "testcase" / "count_change"
@@ -67,16 +67,14 @@ def test_count_change_from_testcase(
         target_image=Path(payload.get("screenshot_b", "N/A")).name,
     )
 
-    backend_config = resolve_vlm_backend_config(
-        backend=payload.get("backend"),
+    vlm_config = resolve_vlm_config(
         api_key=payload.get("api_key"),
         model=payload.get("model"),
         base_url=payload.get("base_url"),
-        default_backend="qwen",
     )
-    api_key = backend_config.api_key
-    model = backend_config.model
-    base_url = backend_config.base_url
+    api_key = vlm_config.api_key
+    model = vlm_config.model
+    base_url = vlm_config.base_url
     bounds = payload.get("bounds", [])
     if bounds == [0, 0, 0, 0]:
         pytest.skip(f"Skipping placeholder test case: {json_path} (bounds not set)")

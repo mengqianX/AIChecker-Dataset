@@ -42,10 +42,9 @@ class TokenUsageTotals:
 
 
 @dataclass(frozen=True)
-class VlmBackendConfig:
-    """Resolved OpenAI-compatible VLM backend configuration."""
+class VlmConfig:
+    """Resolved OpenAI-compatible VLM connection settings."""
 
-    backend: str
     api_key: str | None
     model: str
     base_url: str | None
@@ -62,60 +61,58 @@ def _normalize_openai_base_url(base_url: str | None) -> str | None:
     return normalized
 
 
-def resolve_vlm_backend_config(
+def _first_env(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
+def resolve_vlm_config(
     *,
-    backend: str | None = None,
     api_key: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
-    default_backend: str = "openai",
-) -> VlmBackendConfig:
-    """Resolve VLM backend settings from explicit args and environment variables.
+) -> VlmConfig:
+    """Resolve VLM connection settings from explicit args, then environment variables.
 
-    Supported backend env vars, in priority order:
-    AICHECKER_VLM_BACKEND, VISION_BACKEND, VLM_BACKEND, COUNT_CHANGE_BACKEND.
+    Canonical env vars: AICHECKER_VLM_API_KEY / AICHECKER_VLM_MODEL / AICHECKER_VLM_BASE_URL,
+    falling back to OPENAI_API_KEY / OPENAI_MODEL|VISION_MODEL / OPENAI_BASE_URL.
+    Provider-specific aliases (DASHSCOPE_API_KEY, QWEN_*, MAI_UI_*, UI_TARS_*, HF_TOKEN)
+    remain valid so existing .env files keep working.
     """
 
-    resolved_backend = (
-        backend
-        or os.getenv("AICHECKER_VLM_BACKEND")
-        or os.getenv("VISION_BACKEND")
-        or os.getenv("VLM_BACKEND")
-        or os.getenv("COUNT_CHANGE_BACKEND")
-        or default_backend
-    ).strip().lower()
-
-    if resolved_backend == "qwen":
-        return VlmBackendConfig(
-            backend=resolved_backend,
-            api_key=api_key or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY"),
-            model=model or os.getenv("QWEN_MODEL") or "qwen-vl-max",
-            base_url=_normalize_openai_base_url(
-                base_url or os.getenv("QWEN_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            ),
+    return VlmConfig(
+        api_key=api_key
+        or _first_env(
+            "AICHECKER_VLM_API_KEY",
+            "OPENAI_API_KEY",
+            "DASHSCOPE_API_KEY",
+            "MAI_UI_API_KEY",
+            "UI_TARS_API_KEY",
+            "HF_TOKEN",
+        ),
+        model=model
+        or _first_env(
+            "AICHECKER_VLM_MODEL",
+            "VISION_MODEL",
+            "OPENAI_MODEL",
+            "QWEN_MODEL",
+            "MAI_UI_MODEL",
+            "UI_TARS_MODEL",
         )
-
-    if resolved_backend == "ui-tars":
-        return VlmBackendConfig(
-            backend=resolved_backend,
-            api_key=api_key or os.getenv("UI_TARS_API_KEY") or os.getenv("HF_TOKEN") or "dummy",
-            model=model or os.getenv("UI_TARS_MODEL") or "UI-TARS-7B-DPO",
-            base_url=_normalize_openai_base_url(base_url or os.getenv("UI_TARS_BASE_URL")),
-        )
-
-    if resolved_backend == "mai-ui":
-        return VlmBackendConfig(
-            backend=resolved_backend,
-            api_key=api_key or os.getenv("MAI_UI_API_KEY") or os.getenv("HF_TOKEN") or "dummy",
-            model=model or os.getenv("MAI_UI_MODEL") or "Tongyi-MAI/MAI-UI-8B",
-            base_url=_normalize_openai_base_url(base_url or os.getenv("MAI_UI_BASE_URL")),
-        )
-
-    return VlmBackendConfig(
-        backend=resolved_backend,
-        api_key=api_key or os.getenv("OPENAI_API_KEY"),
-        model=model or os.getenv("VISION_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o",
-        base_url=_normalize_openai_base_url(base_url or os.getenv("OPENAI_BASE_URL")),
+        or "gpt-4o",
+        base_url=_normalize_openai_base_url(
+            base_url
+            or _first_env(
+                "AICHECKER_VLM_BASE_URL",
+                "OPENAI_BASE_URL",
+                "QWEN_BASE_URL",
+                "MAI_UI_BASE_URL",
+                "UI_TARS_BASE_URL",
+            )
+        ),
     )
 
 
@@ -132,7 +129,6 @@ class VisionEvaluator:
         prompt_log_path: Path | None = None,
         prompt_text_path: Path | None = None,
         base_url: str | None = None,
-        backend: str | None = None,
     ) -> None:
         """
         初始化评估器。
@@ -147,18 +143,16 @@ class VisionEvaluator:
             prompt_text_path: 完整 Prompt 文本输出路径（单文件，.txt）。
             base_url: OpenAI-compatible API base URL.
         """
-        backend_config = resolve_vlm_backend_config(
-            backend=backend,
+        vlm_config = resolve_vlm_config(
             api_key=api_key,
             model=model,
             base_url=base_url,
         )
-        self.backend = backend_config.backend
         self.client = OpenAI(
-            api_key=backend_config.api_key,
-            base_url=backend_config.base_url,
+            api_key=vlm_config.api_key,
+            base_url=vlm_config.base_url,
         )
-        self.model = backend_config.model
+        self.model = vlm_config.model
         self.logger = logger or logging.getLogger("vision_gui_agent")
         self.debug = debug
         self.log_full_data_url = log_full_data_url

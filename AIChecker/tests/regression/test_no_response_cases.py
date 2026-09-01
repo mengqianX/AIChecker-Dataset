@@ -8,7 +8,7 @@
 4. 其余不确定（含 CV 的 long_loading）→ 对全帧调用 **no_response 专用 VLM**
 5. 不把 long_loading 由 CV/VLM 混进 no_response 结论
 
-需要通过 .env 或环境变量配置 VLM backend。
+需要通过 .env 或环境变量配置 VLM。
 
 运行：
   AIChecker/.venv/bin/python -m pytest AIChecker/tests/regression/test_no_response_cases.py -q
@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from aichecker.vision.checkers.loading import LoadingDetector
-from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_backend_config
+from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_config
 from testagent_case_utils import (
     collect_case_jsons,
     crop_frames_to_bounds,
@@ -46,16 +46,15 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 
 def _build_loading_detector() -> LoadingDetector:
-    backend_config = resolve_vlm_backend_config()
-    if not backend_config.api_key:
+    vlm_config = resolve_vlm_config()
+    if not vlm_config.api_key:
         pytest.skip("VLM API key is required for no_response regression tests")
 
     logger = logging.getLogger("test_no_response")
     evaluator = VisionEvaluator(
-        api_key=backend_config.api_key,
-        model=backend_config.model,
-        base_url=backend_config.base_url,
-        backend=backend_config.backend,
+        api_key=vlm_config.api_key,
+        model=vlm_config.model,
+        base_url=vlm_config.base_url,
         logger=logger,
         debug=_truthy_env("VGA_DEBUG", "0"),
     )

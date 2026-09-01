@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - optional convenience dependency
     load_dotenv = None  # type: ignore[assignment]
 
 from aichecker.vision.checkers.count_change import ControlBounds, CountChangeDetector
-from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_backend_config
+from aichecker.vision.evaluator import VisionEvaluator, resolve_vlm_config
 from aichecker.vision.checkers.load_failure import LoadFailurePromptDetector
 from aichecker.vision.checkers.list_refresh import ListRefreshDetector
 from aichecker.vision.checkers.loading import LoadingDetector
@@ -382,14 +382,13 @@ def run() -> None:
     logger.info("vision_gui_agent 启动")
     logger.info("本次运行输出根目录: %s", output_root)
 
-    backend_config = resolve_vlm_backend_config()
-    if not backend_config.api_key:
+    vlm_config = resolve_vlm_config()
+    if not vlm_config.api_key:
         raise EnvironmentError("未读取到 VLM API key。请检查 .env 或当前终端环境变量。")
     logger.info(
-        "VLM backend: backend=%s, model=%s, base_url=%s",
-        backend_config.backend,
-        backend_config.model,
-        backend_config.base_url or "",
+        "VLM config: model=%s, base_url=%s",
+        vlm_config.model,
+        vlm_config.base_url or "",
     )
     debug_enabled = os.getenv("VGA_DEBUG", "1").strip() in {"1", "true", "True", "YES", "yes"}
     log_full_data_url = os.getenv("VGA_LOG_FULL_DATA_URL", "0").strip() in {"1", "true", "True", "YES", "yes"}
@@ -436,10 +435,9 @@ def run() -> None:
     crop_min_area_ratio = float(os.getenv("VGA_CROP_MIN_AREA_RATIO", "0.10"))
 
     evaluator = VisionEvaluator(
-        api_key=backend_config.api_key,
-        model=backend_config.model,
-        base_url=backend_config.base_url,
-        backend=backend_config.backend,
+        api_key=vlm_config.api_key,
+        model=vlm_config.model,
+        base_url=vlm_config.base_url,
         logger=logger,
         debug=debug_enabled,
         log_full_data_url=log_full_data_url,
