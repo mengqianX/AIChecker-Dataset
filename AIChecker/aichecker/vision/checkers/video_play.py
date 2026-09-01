@@ -41,6 +41,8 @@ class VideoPlayDetector(SeekPlaybackDetector):
         play_full_change_threshold: float = 0.05,
         play_content_change_threshold: float = 0.03,
         motion_min_active_ratio: float = 0.34,
+        motion_mean_change_threshold: float = 0.02,
+        motion_noise_std_threshold: float = 0.002,
         **kwargs: Any,
     ) -> None:
         super().__init__(logger=logger, **kwargs)
@@ -50,6 +52,8 @@ class VideoPlayDetector(SeekPlaybackDetector):
         self.play_full_change_threshold = max(0.0, float(play_full_change_threshold))
         self.play_content_change_threshold = max(0.0, float(play_content_change_threshold))
         self.motion_min_active_ratio = min(1.0, max(0.0, float(motion_min_active_ratio)))
+        self.motion_mean_change_threshold = max(0.0, float(motion_mean_change_threshold))
+        self.motion_noise_std_threshold = max(0.0, float(motion_noise_std_threshold))
 
     @staticmethod
     def _candidate_score(item: dict[str, Any]) -> float:
@@ -107,8 +111,11 @@ class VideoPlayDetector(SeekPlaybackDetector):
         transitions = self._transition_metrics(frames)
         content_ratios = [float(item["content_change_ratio"]) for item in transitions]
         content_stats = self._stats(content_ratios)
+        mean_change = float(content_stats["mean"])
+        max_change = float(content_stats["max"])
+        std_change = float(content_stats["std"])
         active_count = sum(
-            1 for ratio in content_ratios if ratio >= self.playback_mean_change_threshold
+            1 for ratio in content_ratios if ratio >= self.motion_mean_change_threshold
         )
         active_ratio = active_count / max(1, len(content_ratios))
         metrics = {
@@ -117,16 +124,24 @@ class VideoPlayDetector(SeekPlaybackDetector):
             "active_transition_count": active_count,
             "active_transition_ratio": active_ratio,
             "motion_min_active_ratio": self.motion_min_active_ratio,
+            "motion_mean_change_threshold": self.motion_mean_change_threshold,
+            "motion_noise_std_threshold": self.motion_noise_std_threshold,
         }
-        # 要求变化足够，且不是单次 UI 尖峰：活跃转场占比需达标。
-        intensity_ok = (
-            float(content_stats["mean"]) >= self.playback_mean_change_threshold
-            or float(content_stats["max"]) >= self.playback_max_change_threshold
-        )
+        # 全片兜底比 post-play 更严：编码噪声、网速数字、裁边抖动不应判为正在播放。
+        intensity_ok = mean_change >= self.motion_mean_change_threshold
         sustained_ok = active_ratio >= self.motion_min_active_ratio and active_count >= 2
         if len(content_ratios) <= 2:
-            sustained_ok = active_count >= 1 and float(content_stats["mean"]) >= self.playback_mean_change_threshold
-        passed = intensity_ok and sustained_ok
+            sustained_ok = active_count >= 1 and mean_change >= self.motion_mean_change_threshold
+        # 变化幅度接近常数且不大时，视为压缩噪声/微小 UI 刷新，而非内容播放。
+        noise_like = (
+            mean_change < self.motion_mean_change_threshold * 1.5
+            and std_change <= self.motion_noise_std_threshold
+            and max_change < self.motion_mean_change_threshold * 1.5
+        )
+        metrics["intensity_ok"] = intensity_ok
+        metrics["sustained_ok"] = sustained_ok
+        metrics["noise_like"] = noise_like
+        passed = intensity_ok and sustained_ok and not noise_like
         return passed, metrics
 
     def _judge_post_play(
@@ -264,6 +279,8 @@ class VideoPlayDetector(SeekPlaybackDetector):
                     "play_full_change_threshold": self.play_full_change_threshold,
                     "play_content_change_threshold": self.play_content_change_threshold,
                     "motion_min_active_ratio": self.motion_min_active_ratio,
+                    "motion_mean_change_threshold": self.motion_mean_change_threshold,
+                    "motion_noise_std_threshold": self.motion_noise_std_threshold,
                     "playback_mean_change_threshold": self.playback_mean_change_threshold,
                     "playback_max_change_threshold": self.playback_max_change_threshold,
                 },

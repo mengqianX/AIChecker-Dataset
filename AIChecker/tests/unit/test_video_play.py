@@ -118,3 +118,47 @@ def test_single_ui_spike_without_sustained_motion_is_not_passed(tmp_path: Path) 
     assert result.play_action_detected is False
     assert result.bug_detected is True
     assert result.decision_source in {"cv_play_locator", "cv_whole_video_motion"}
+
+
+def _write_encoding_noise_frame(path: Path, seed: int) -> None:
+    """冻结画面 + 约 0.7% 像素噪声，模拟压缩伪影/网速数字刷新。"""
+    height, width = 640, 360
+    image = np.full((height, width, 3), 40, dtype=np.uint8)
+    image[80:420, 60:300] = (90, 90, 90)
+    rng = np.random.default_rng(seed)
+    mask = rng.random((height, width)) < 0.007
+    noisy = image.astype(np.int16)
+    noisy[mask] = np.clip(noisy[mask] + 40, 0, 255)
+    cv2.imwrite(str(path), noisy.astype(np.uint8))
+
+
+def test_constant_encoding_noise_without_play_is_detected_as_bug(tmp_path: Path) -> None:
+    """未点到播放且仅有平稳压缩噪声时，全片兜底不应判为播放正常。"""
+    frames: list[_Frame] = []
+    for idx in range(8):
+        path = tmp_path / f"f{idx}.png"
+        _write_encoding_noise_frame(path, seed=100 + idx)
+        frames.append(_Frame(path, float(idx)))
+
+    result = VideoPlayDetector().detect(frames, task_id="encoding_noise_freeze")
+    assert result.play_action_detected is False
+    assert result.bug_detected is True
+
+
+def test_whole_video_real_motion_without_play_action_still_passes(tmp_path: Path) -> None:
+    """定位不到播放按钮但画面持续大幅变化时，仍应判为播放正常。"""
+    frames: list[_Frame] = []
+    for idx in range(6):
+        path = tmp_path / f"f{idx}.png"
+        height, width = 640, 360
+        image = np.full((height, width, 3), 30, dtype=np.uint8)
+        shift = 40 + idx * 50
+        image[80:420, 60:300] = (shift % 200, (shift * 2) % 200, (shift * 3) % 200)
+        cv2.imwrite(str(path), image)
+        frames.append(_Frame(path, float(idx)))
+
+    detector = VideoPlayDetector(play_content_change_threshold=1.0, play_full_change_threshold=1.0)
+    result = detector.detect(frames, task_id="autoplay_no_button")
+    assert result.play_action_detected is False
+    assert result.bug_detected is False
+    assert result.decision_source == "cv_whole_video_motion"
