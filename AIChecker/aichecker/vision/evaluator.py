@@ -14,6 +14,8 @@ from typing import Any
 
 from openai import OpenAI
 
+from aichecker.vision.vlm_json import recover_vlm_json
+
 
 @dataclass
 class EvaluationResult:
@@ -148,9 +150,11 @@ class VisionEvaluator:
             model=model,
             base_url=base_url,
         )
+        timeout_sec = float(os.getenv("VGA_VLM_TIMEOUT_SEC", "60"))
         self.client = OpenAI(
             api_key=vlm_config.api_key,
             base_url=vlm_config.base_url,
+            timeout=timeout_sec,
         )
         self.model = vlm_config.model
         self.logger = logger or logging.getLogger("vision_gui_agent")
@@ -310,6 +314,11 @@ class VisionEvaluator:
             image_b64 = base64.b64encode(f.read()).decode("utf-8")
         return f"data:{mime_type};base64,{image_b64}"
 
+    @staticmethod
+    def _parse_json_object(raw_text: str) -> dict[str, Any]:
+        """兼容入口：走 VLM JSON 包装器，不二次调用模型。"""
+        return recover_vlm_json(raw_text).payload
+
     def evaluate(
         self,
         before_image: Path,
@@ -400,15 +409,20 @@ class VisionEvaluator:
                 raise FileNotFoundError(f"额外图片不存在: {image_path}")
 
         all_images: list[Path] = [before_image, after_image] + extra_image_paths
-        self.logger.info(
-            "VLM调用开始: task_id=%s, model=%s, image_count=%s",
-            task_id,
-            self.model,
-            len(all_images),
-        )
+        image_bytes = [p.stat().st_size for p in all_images]
         t_encode_start = time.perf_counter()
         data_urls: list[str] = [self._encode_image_to_data_url(p) for p in all_images]
         encode_elapsed_ms = (time.perf_counter() - t_encode_start) * 1000.0
+        payload_kb = sum(len(item) for item in data_urls) / 1024.0
+        self.logger.info(
+            "VLM调用开始: task_id=%s, model=%s, image_count=%s, image_kb=%s, payload_kb=%.1f, encode=%.2fms",
+            task_id,
+            self.model,
+            len(all_images),
+            [round(size / 1024.0, 1) for size in image_bytes],
+            payload_kb,
+            encode_elapsed_ms,
+        )
 
         if image_role_labels is None:
             image_role_labels = ["图1:交互前关键帧", "图2:交互后关键帧"] + [
@@ -476,10 +490,11 @@ class VisionEvaluator:
             api_elapsed_ms = (time.perf_counter() - t_api_start) * 1000.0
             error_text = f"{type(exc).__name__}: {exc}"
             self.logger.error(
-                "VLM调用失败: task_id=%s, encode=%.2fms, api=%.2fms, error=%s",
+                "VLM调用失败: task_id=%s, encode=%.2fms, api=%.2fms, payload_kb=%.1f, error=%s",
                 task_id,
                 encode_elapsed_ms,
                 api_elapsed_ms,
+                payload_kb,
                 error_text,
             )
             prompt_text_path = self._save_prompt_error_text(
@@ -517,10 +532,12 @@ class VisionEvaluator:
         prompt_record["prompt_text_file"] = str(prompt_text_path) if prompt_text_path else None
         self._append_prompt_log(prompt_record)
         self.logger.info(
-            "VLM调用结束: task_id=%s, encode=%.2fms, api=%.2fms, images=%s, tokens(prompt=%s, completion=%s, total=%s)",
+            "VLM调用结束: task_id=%s, encode=%.2fms, api=%.2fms, payload_kb=%.1f, images=%s, "
+            "tokens(prompt=%s, completion=%s, total=%s)",
             task_id,
             encode_elapsed_ms,
             api_elapsed_ms,
+            payload_kb,
             len(data_urls),
             token_usage["prompt_tokens"],
             token_usage["completion_tokens"],
@@ -536,16 +553,11 @@ class VisionEvaluator:
                 len(data_urls),
             )
 
-        try:
-            parsed: dict[str, Any] = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"模型输出不是合法 JSON: {raw_text}") from exc
-
-        if required_fields:
-            for field, expected_type in required_fields.items():
-                if field not in parsed:
-                    raise ValueError(f"模型输出缺少必需字段: {field} | {parsed}")
-                if not isinstance(parsed[field], expected_type):
-                    raise ValueError(f"字段类型不匹配: {field} 期望 {expected_type} 实际 {type(parsed[field])}")
-
-        return JsonEvaluationResult(parsed_json=parsed, raw_response=raw_text)
+        recovered = recover_vlm_json(raw_text, required_fields=required_fields)
+        if recovered.repaired:
+            self.logger.info(
+                "VLM JSON已由包装器修复: task_id=%s method=%s",
+                task_id,
+                recovered.method,
+            )
+        return JsonEvaluationResult(parsed_json=recovered.payload, raw_response=raw_text)

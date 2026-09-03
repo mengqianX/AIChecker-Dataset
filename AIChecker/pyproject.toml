@@ -33,9 +33,3 @@ Repository = "https://example.com/aichecker"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["aichecker", "aichecker.*"]
-
-[tool.setuptools.package-data]
-"aichecker.vision" = [
-    "prompts/toast/*.json",
-    "prompts/toast/archive/*.json",
-]

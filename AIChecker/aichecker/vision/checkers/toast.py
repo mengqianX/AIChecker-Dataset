@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,24 +49,23 @@ class ToastMessageDetector:
         debug: bool = False,
         preprocessor: GuiPreprocessor | None = None,
         enable_preprocess: bool = True,
-        top_k_candidates: int = 3,
-        prompt_version: str = "current",
-        # early_stop_confidence: float = 0.95,
+        top_k_candidates: int = 2,
+        early_stop_confidence: float = 0.85,
+        min_peak_score: float = 0.2,
+        vlm_max_long_edge: int = 0,
     ) -> None:
         self.evaluator = evaluator
         self.logger = logger or logging.getLogger("vision_gui_agent")
         self.debug = debug
         self.preprocessor = preprocessor
         self.enable_preprocess = enable_preprocess
-        self.top_k_candidates = max(1, int(top_k_candidates))
-        self.prompt_pack = build_prompt_for_type(
-            task_type="toast",
-            context={
-                "prompt_version": prompt_version,
-                "logger": self.logger,
-            },
-        )
-        # self.early_stop_confidence = min(1.0, max(0.0, float(early_stop_confidence)))
+        self.top_k_candidates = min(2, max(1, int(top_k_candidates)))
+        self.early_stop_confidence = min(1.0, max(0.0, float(early_stop_confidence)))
+        self.min_peak_score = max(0.0, float(min_peak_score))
+        # 0 = 送抽帧原图。压缩主要伤小字 toast，对网关耗时几乎无帮助。
+        edge = int(vlm_max_long_edge)
+        self.vlm_max_long_edge = 0 if edge <= 0 else max(256, edge)
+        self.prompt_pack = build_prompt_for_type(task_type="toast", context={})
 
     @staticmethod
     def _normalize_toast_text(text: str) -> str:
@@ -86,14 +85,6 @@ class ToastMessageDetector:
     @staticmethod
     def _has_success_signal(text: str) -> bool:
         return any(token in text for token in ["成功", "已", "完成", "恢复", "还原", "通过"])
-
-    @staticmethod
-    def _is_likely_cta_text(text: str) -> bool:
-        normalized = (text or "").strip()
-        if not normalized:
-            return False
-        cta_tokens = ["点击", "进入", "去", "立即", "马上", "查看", "开启", "直播间"]
-        return any(token in normalized for token in cta_tokens)
 
     @staticmethod
     def _char_ngram_set(text: str, n: int) -> set[str]:
@@ -159,168 +150,20 @@ class ToastMessageDetector:
             return "标签已添加"
         return ""
 
-    def _read_snackbar_text_with_vlm(self, band_image: Path, task_id: str) -> str:
-        system_prompt = (
-            "你是移动端 UI 文本读取助手。请只读取图片中 Android snackbar/toast 深色条内的中文提示文案。"
-            "忽略“撤销”等按钮文字。只输出 JSON：{\"text\": str}。"
-        )
-        user_prompt = "请读取图中底部 snackbar/toast 条内的提示文案。"
-        try:
-            result = self.evaluator.evaluate_json(
-                before_image=band_image,
-                after_image=band_image,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                task_id=f"{task_id}_snackbar_ocr",
-                required_fields={"text": str},
-            )
-            text = str(result.parsed_json.get("text", "")).strip()
-            return text
-        except Exception as exc:  # pylint: disable=broad-except
-            if self.debug:
-                self.logger.warning("snackbar 文案读取失败: task_id=%s, err=%s", task_id, exc)
-            return ""
-
-    def _apply_snackbar_cv_fallback(
-        self,
-        *,
-        center_image: Path,
-        task_id: str,
-        segment_task_id: str,
-        toast_visible: bool,
-        toast_text: str,
-        action_semantic: str,
-        inferred_expected_toast_text: str,
-        reason: str,
-    ) -> tuple[bool, str, str, str, str]:
-        if toast_visible or self.preprocessor is None:
-            return toast_visible, toast_text, action_semantic, inferred_expected_toast_text, reason
-        try:
-            probe = self.preprocessor.probe_bottom_snackbar(center_image)
-        except Exception:  # pylint: disable=broad-except
-            return toast_visible, toast_text, action_semantic, inferred_expected_toast_text, reason
-        if not probe.get("likely_snackbar"):
-            return toast_visible, toast_text, action_semantic, inferred_expected_toast_text, reason
-
-        band_path = self.preprocessor.save_bottom_band_crop(
-            center_image,
-            f"{task_id}_snackbar_{segment_task_id}.png",
-        )
-        if band_path is None:
-            return toast_visible, toast_text, action_semantic, inferred_expected_toast_text, reason
-
-        recovered_text = self._read_snackbar_text_with_vlm(band_path, segment_task_id)
-        if not recovered_text:
-            return toast_visible, toast_text, action_semantic, inferred_expected_toast_text, reason
-
-        inferred = inferred_expected_toast_text or self._infer_expected_for_tag_action(action_semantic)
-        return (
-            True,
-            recovered_text,
-            action_semantic,
-            inferred,
-            (
-                f"{reason}（后处理修正：CV 检测到底部 snackbar，补读文案为“{recovered_text}”。）"
-            ).strip(),
-        )
-
-    @staticmethod
-    def _select_snackbar_probe_indices(
-        sampled_frames: list[ExtractedFrame],
-        selected_indices: list[int],
-        preprocessor: GuiPreprocessor | None,
-        *,
-        max_extra: int = 4,
-    ) -> list[int]:
-        if preprocessor is None:
-            return []
-        selected = set(selected_indices)
-        snackbar_hits: list[int] = []
-        for idx, frame in enumerate(sampled_frames):
-            if idx in selected:
-                continue
-            try:
-                probe = preprocessor.probe_bottom_snackbar(frame.image_path)
-            except Exception:  # pylint: disable=broad-except
-                continue
-            if probe.get("likely_snackbar"):
-                snackbar_hits.append(idx)
-
-        if not snackbar_hits:
-            return []
-
-        # 只补充最早出现的 snackbar 及其前一帧，用于建立“动作 -> 反馈”上下文。
-        first_hit = min(snackbar_hits)
-        extras = [first_hit]
-        if first_hit > 0:
-            extras.append(first_hit - 1)
-
-        deduped: list[int] = []
-        for idx in extras:
-            if idx in selected or idx in deduped:
-                continue
-            deduped.append(idx)
-        return deduped[:max_extra]
-
     @classmethod
-    def _apply_cross_candidate_conflicts(
-        cls,
-        candidates: list[dict[str, Any]],
-        *,
-        detector: "ToastMessageDetector | None" = None,
-        task_id: str = "",
-    ) -> None:
+    def _apply_cross_candidate_conflicts(cls, candidates: list[dict[str, Any]]) -> None:
         tag_action_seen = any(cls._contains_tag_action(str(c.get("action_semantic", ""))) for c in candidates)
-        if not tag_action_seen or detector is None or detector.preprocessor is None:
+        if not tag_action_seen:
             return
         for candidate in candidates:
-            action_semantic = str(candidate.get("action_semantic", ""))
             feedback_text = " ".join(
                 [
                     str(candidate.get("toast_text", "")),
-                    action_semantic,
+                    str(candidate.get("action_semantic", "")),
                     str(candidate.get("reason", "")),
                 ]
             )
-            recycle_related = cls._contains_recycle_feedback(feedback_text)
-            if not recycle_related and not candidate.get("toast_text"):
-                continue
-
-            frame = candidate.get("frame")
-            if frame is None:
-                continue
-            try:
-                probe = detector.preprocessor.probe_bottom_snackbar(frame.image_path)
-            except Exception:  # pylint: disable=broad-except
-                probe = {"likely_snackbar": False}
-            if not candidate.get("toast_text") and probe.get("likely_snackbar"):
-                segment_task_id = f"{task_id}_toast_scan_{int(candidate.get('idx', 0)):04d}"
-                (
-                    toast_visible,
-                    toast_text,
-                    action_semantic,
-                    inferred_expected_toast_text,
-                    reason,
-                ) = detector._apply_snackbar_cv_fallback(
-                    center_image=frame.image_path,
-                    task_id=task_id,
-                    segment_task_id=segment_task_id,
-                    toast_visible=bool(candidate.get("toast_visible")),
-                    toast_text=str(candidate.get("toast_text", "")),
-                    action_semantic=action_semantic,
-                    inferred_expected_toast_text=str(candidate.get("inferred_expected_toast_text", "")),
-                    reason=str(candidate.get("reason", "")),
-                )
-                candidate["toast_visible"] = toast_visible
-                candidate["toast_text"] = toast_text
-                candidate["action_semantic"] = action_semantic
-                candidate["inferred_expected_toast_text"] = inferred_expected_toast_text
-                candidate["reason"] = reason
-                feedback_text = " ".join([toast_text, action_semantic, reason])
-
-            if not candidate.get("toast_text"):
-                continue
-            if not cls._contains_recycle_feedback(feedback_text):
+            if not candidate.get("toast_text") or not cls._contains_recycle_feedback(feedback_text):
                 continue
             candidate["toast_visible"] = True
             candidate["expectation_met"] = False
@@ -333,40 +176,11 @@ class ToastMessageDetector:
             ).strip()
 
     @staticmethod
-    def _build_toast_image_role_labels(extra_image_paths: list[Path]) -> list[str]:
-        labels = [
+    def _build_toast_image_role_labels() -> list[str]:
+        return [
             "图1:动作前完整帧（必须用于推断操作语义）",
-            "图2:候选完整帧（可能包含toast）",
+            "图2:候选完整帧（toast出现时）",
         ]
-        for idx, path in enumerate(extra_image_paths):
-            name = path.name.lower()
-            if idx == 0:
-                labels.append("图3:后续完整帧（用于判断是否为瞬时提示）")
-                continue
-            if "after_roi" in name:
-                labels.append("局部ROI:候选帧toast区域裁剪")
-            elif "center_roi" in name:
-                labels.append("局部ROI:后续帧同区域裁剪")
-            elif "bottom_center" in name or "bottom_after" in name:
-                labels.append("局部ROI:底部snackbar候选区域")
-            elif "diff_mask" in name:
-                labels.append("辅助图:差分mask（仅用于定位，不代表语义）")
-            else:
-                labels.append("额外证据图（后续完整帧）")
-        return labels
-
-    @staticmethod
-    def _compact_preprocess_structured(preprocess_structured: dict[str, Any] | None) -> dict[str, Any]:
-        """压缩前处理证据，减少 prompt 噪声与 token 开销。"""
-        if not preprocess_structured:
-            return {}
-        return {
-            "candidate_index": preprocess_structured.get("candidate_index"),
-            "candidate_source": preprocess_structured.get("candidate_source"),
-            "candidate_roi_box": preprocess_structured.get("candidate_roi_box"),
-            "roi_changed_ratio": preprocess_structured.get("roi_changed_pixel_ratio_center_to_after"),
-            "roi_mean_abs_diff": preprocess_structured.get("roi_mean_abs_diff_center_to_after"),
-        }
 
     @staticmethod
     def _select_final_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -384,7 +198,6 @@ class ToastMessageDetector:
             and (not bool(c.get("is_uncertain_action")))
         ]
         if visible_reliable_failures:
-            # 仅“可解释且低风险”的冲突候选优先，避免不确定动作导致误报。
             return max(visible_reliable_failures, key=_rank_key)
 
         visible_expectations_met = [c for c in candidates if bool(c.get("toast_visible")) and bool(c.get("expectation_met"))]
@@ -403,7 +216,6 @@ class ToastMessageDetector:
 
         invisible_candidates = [c for c in candidates if not bool(c.get("toast_visible"))]
         if invisible_candidates:
-            # 未识别 toast 时优先取更晚的候选帧，避免停留在中途弹窗态。
             return max(
                 invisible_candidates,
                 key=lambda c: (int(c.get("idx") or 0), float(c.get("confidence") or 0.0)),
@@ -412,75 +224,86 @@ class ToastMessageDetector:
         return max(candidates, key=_rank_key)
 
     @staticmethod
-    def _effective_top_k(total_candidates: int, configured_top_k: int) -> int:
-        if total_candidates <= configured_top_k:
-            return total_candidates
-        # 长录屏提高候选上限，避免 toast 出现在中后段时被 top_k 截断。
-        scaled = max(configured_top_k, (total_candidates + 11) // 12)
-        return min(scaled, 8)
-
-    @staticmethod
-    def _select_supplementary_strip_candidates(
+    def _select_score_peaks(
         candidate_scores: list[dict[str, Any]],
-        selected_indices: list[int],
         *,
-        max_extra: int = 3,
+        max_peaks: int,
+        min_separation: int = 3,
+        min_score: float = 0.2,
     ) -> list[int]:
-        """
-        补充窄条 diff_contour 候选：toast 可能在页面转场时出现，final score 会被 transition_penalty 压低。
-        """
-        extras: list[tuple[int, float, float]] = []
-        selected = set(selected_indices)
-        for item in candidate_scores:
-            idx = int(item.get("index", -1))
-            if idx < 0 or idx in selected:
-                continue
-            if str(item.get("source", "")) != "diff_contour":
-                continue
-            try:
-                aspect_ratio = float(item.get("candidate_aspect_ratio", 0.0))
-                height_ratio = float(item.get("candidate_height_ratio", 0.0))
-            except (TypeError, ValueError):
-                continue
-            if aspect_ratio < 8.0 or height_ratio > 0.12:
-                continue
-            components = item.get("score_components") or {}
-            try:
-                weighted_base = float(components.get("weighted_base", item.get("score", 0.0)))
-            except (TypeError, ValueError):
-                weighted_base = 0.0
-            if weighted_base < 0.5:
-                continue
-            extras.append((idx, weighted_base, aspect_ratio))
-
-        extras.sort(key=lambda row: (row[1], row[2]), reverse=True)
-        return [idx for idx, _, _ in extras[:max_extra]]
-
-    @staticmethod
-    def _select_supplementary_bottom_band_candidates(
-        candidate_scores: list[dict[str, Any]],
-        selected_indices: list[int],
-        *,
-        max_extra: int = 2,
-        min_score: float = 0.65,
-    ) -> list[int]:
-        extras: list[tuple[int, float]] = []
-        selected = set(selected_indices)
-        for item in candidate_scores:
-            idx = int(item.get("index", -1))
-            if idx < 0 or idx in selected:
-                continue
-            if str(item.get("source", "")) != "high_dynamic_bottom_band":
-                continue
-            try:
-                score_value = float(item.get("score", 0.0))
-            except (TypeError, ValueError):
-                continue
+        ranked = sorted(
+            candidate_scores,
+            key=lambda item: (float(item.get("score") or 0.0), int(item.get("index") or 0)),
+            reverse=True,
+        )
+        selected: list[int] = []
+        for item in ranked:
+            score_value = float(item.get("score") or 0.0)
             if score_value < min_score:
                 continue
-            extras.append((idx, score_value))
-        extras.sort(key=lambda row: row[1], reverse=True)
-        return [idx for idx, _ in extras[:max_extra]]
+            idx = int(item.get("index", -1))
+            if idx < 0:
+                continue
+            if any(abs(idx - kept) < min_separation for kept in selected):
+                continue
+            selected.append(idx)
+            if len(selected) >= max_peaks:
+                break
+        if selected:
+            return selected
+        if not ranked:
+            return []
+        fallback_score = float(ranked[0].get("score") or 0.0)
+        fallback_idx = int(ranked[0].get("index", -1))
+        if fallback_score <= 0.0 or fallback_idx < 0:
+            return []
+        return [fallback_idx]
+
+    @staticmethod
+    def _build_detect_timing(
+        *,
+        detect_start: float,
+        scoring_elapsed_ms: float,
+        preview_elapsed_ms: float,
+        eval_elapsed_total_ms: float,
+        vlm_calls: list[dict[str, Any]],
+        frame_count: int,
+        selected_indices: list[int],
+        vlm_max_long_edge: int,
+    ) -> dict[str, Any]:
+        detect_elapsed_ms = (time.perf_counter() - detect_start) * 1000.0
+        return {
+            "detect_elapsed_ms": round(detect_elapsed_ms, 2),
+            "scoring_elapsed_ms": round(scoring_elapsed_ms, 2),
+            "preprocess_elapsed_total_ms": round(scoring_elapsed_ms, 2),
+            "preview_elapsed_ms": round(preview_elapsed_ms, 2),
+            "vlm_eval_elapsed_total_ms": round(eval_elapsed_total_ms, 2),
+            "vlm_call_count": len(vlm_calls),
+            "vlm_calls": vlm_calls,
+            "vlm_max_long_edge": vlm_max_long_edge,
+            "frame_count": frame_count,
+            "selected_indices": selected_indices,
+        }
+
+    def _log_detect_timing(self, timing: dict[str, Any]) -> None:
+        calls = timing.get("vlm_calls") or []
+        call_txt = ", ".join(
+            f"idx={item.get('idx')}:{item.get('elapsed_ms')}ms"
+            for item in calls
+        ) or "-"
+        self.logger.info(
+            "toast 耗时拆分: detect=%.0fms | cv_score=%.0fms | jpeg_preview=%.0fms | "
+            "vlm_total=%.0fms (%s calls: %s) | frames=%s peaks=%s long_edge=%s",
+            float(timing.get("detect_elapsed_ms") or 0.0),
+            float(timing.get("scoring_elapsed_ms") or 0.0),
+            float(timing.get("preview_elapsed_ms") or 0.0),
+            float(timing.get("vlm_eval_elapsed_total_ms") or 0.0),
+            int(timing.get("vlm_call_count") or 0),
+            call_txt,
+            timing.get("frame_count"),
+            timing.get("selected_indices"),
+            timing.get("vlm_max_long_edge"),
+        )
 
     def detect(
         self,
@@ -502,112 +325,100 @@ class ToastMessageDetector:
         total_candidates = len(sampled_frames)
         detect_start = time.perf_counter()
         scoring_elapsed_ms = 0.0
-        preprocess_elapsed_total_ms = 0.0
+        preview_elapsed_ms = 0.0
         eval_elapsed_total_ms = 0.0
+        vlm_calls: list[dict[str, Any]] = []
         candidate_scores: list[dict[str, Any]] = []
-
+        max_vlm = min(max(1, self.top_k_candidates), 2)
         candidate_indices = list(range(total_candidates))
-        if self.enable_preprocess and self.preprocessor is not None and total_candidates > self.top_k_candidates:
-            effective_top_k = self._effective_top_k(total_candidates, self.top_k_candidates)
+        preview_root: Path | None = None
+
+        if self.enable_preprocess and self.preprocessor is not None:
             t_scoring_start = time.perf_counter()
-            scored: list[tuple[int, float]] = []
-            for idx in candidate_indices:
-                center = sampled_frames[idx]
-                before = sampled_frames[idx - 1] if idx > 0 else sampled_frames[idx]
-                after = sampled_frames[idx + 1] if idx < total_candidates - 1 else sampled_frames[idx]
-                try:
-                    score_result = self.preprocessor.score_toast_triplet(
-                        before_image=before.image_path,
-                        center_image=center.image_path,
-                        after_image=after.image_path,
-                    )
-                    score_value = float(score_result.get("score", 0.0))
-                    scored.append((idx, score_value))
-                    candidate_scores.append(
-                        {
-                            "index": idx,
-                            "timestamp_sec": center.timestamp_sec,
-                            "score": score_value,
-                            **score_result,
-                        }
-                    )
-                except Exception as exc:  # pylint: disable=broad-except
-                    if self.debug:
-                        self.logger.warning("toast 候选打分失败: idx=%s, err=%s", idx, exc)
-                    scored.append((idx, 0.0))
-                    candidate_scores.append(
-                        {
-                            "index": idx,
-                            "timestamp_sec": center.timestamp_sec,
-                            "score": 0.0,
-                            "source": "score_error",
-                            "reason": str(exc),
-                        }
-                    )
-
-            scored.sort(key=lambda x: x[1], reverse=True)
-            candidate_scores.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
-            candidate_indices = [idx for idx, _ in scored[:effective_top_k]]
-            supplementary = self._select_supplementary_strip_candidates(
-                candidate_scores,
-                candidate_indices,
-                max_extra=min(3, self.top_k_candidates),
-            )
-            supplementary.extend(
-                self._select_supplementary_bottom_band_candidates(
+            try:
+                scored = self.preprocessor.score_toast_sequence(
+                    [frame.image_path for frame in sampled_frames]
+                )
+                for item in scored:
+                    idx = int(item.get("index", 0))
+                    item["timestamp_sec"] = sampled_frames[idx].timestamp_sec
+                candidate_scores = scored
+                candidate_indices = self._select_score_peaks(
                     candidate_scores,
-                    candidate_indices + supplementary,
-                    max_extra=2,
+                    max_peaks=max_vlm,
+                    min_separation=3,
+                    min_score=self.min_peak_score,
                 )
-            )
-            if supplementary:
-                candidate_indices = sorted(set(candidate_indices + supplementary))
-            snackbar_probe = self._select_snackbar_probe_indices(
-                sampled_frames,
-                candidate_indices,
-                self.preprocessor,
-                max_extra=4,
-            )
-            if snackbar_probe:
-                candidate_indices = sorted(set(candidate_indices + snackbar_probe))
+            except Exception as exc:  # pylint: disable=broad-except
+                if self.debug:
+                    self.logger.warning("toast 候选打分失败: err=%s", exc)
+                candidate_scores = [
+                    {
+                        "index": idx,
+                        "timestamp_sec": frame.timestamp_sec,
+                        "score": 0.0,
+                        "source": "score_error",
+                        "reason": str(exc),
+                    }
+                    for idx, frame in enumerate(sampled_frames)
+                ]
+                candidate_indices = []
             scoring_elapsed_ms = (time.perf_counter() - t_scoring_start) * 1000.0
-            if self.debug:
-                self.logger.info(
-                    "toast 候选筛选: total=%s, top_k=%s, effective_top_k=%s, selected=%s, supplementary=%s, elapsed=%.2fms",
-                    total_candidates,
-                    self.top_k_candidates,
-                    effective_top_k,
-                    candidate_indices,
-                    supplementary,
-                    scoring_elapsed_ms,
-                )
+            peak_scores = [
+                round(float(item.get("score") or 0.0), 3)
+                for item in candidate_scores
+                if int(item.get("index", -1)) in set(candidate_indices)
+            ]
+            self.logger.info(
+                "toast CV打分: frames=%s elapsed=%.0fms max_vlm=%s peaks=%s scores=%s",
+                total_candidates,
+                scoring_elapsed_ms,
+                max_vlm,
+                candidate_indices,
+                peak_scores,
+            )
+        elif total_candidates > max_vlm:
+            candidate_indices = list(range(total_candidates - max_vlm, total_candidates))
 
-        for idx in candidate_indices:
+        score_by_idx = {int(item.get("index", -1)): float(item.get("score") or 0.0) for item in candidate_scores}
+        eval_order = sorted(candidate_indices, key=lambda idx: (score_by_idx.get(idx, 0.0), idx), reverse=True)
+        if eval_order:
+            self.logger.info(
+                "toast 开始VLM: task_id=%s peaks=%s (等待网关，默认最长60s/次)",
+                task_id,
+                eval_order,
+            )
+        preview_cache: dict[Path, Path] = {}
+
+        def _vlm_frame(source: Path) -> Path:
+            nonlocal preview_root, preview_elapsed_ms
+            cached = preview_cache.get(source)
+            if cached is not None:
+                return cached
+            preprocessor = self.preprocessor
+            if preprocessor is None or self.vlm_max_long_edge <= 0:
+                return source
+            if preview_root is None:
+                preview_root = (
+                    preprocessor.artifact_dir / "vlm_preview"
+                    if preprocessor.artifact_dir is not None
+                    else Path(tempfile.mkdtemp(prefix="toast_vlm_"))
+                )
+            dest = preview_root / f"{source.stem}_vlm.jpg"
+            t_preview = time.perf_counter()
+            preview = preprocessor.write_vlm_preview(
+                source,
+                dest,
+                max_long_edge=self.vlm_max_long_edge,
+            )
+            preview_elapsed_ms += (time.perf_counter() - t_preview) * 1000.0
+            preview_cache[source] = preview
+            return preview
+
+        for idx in eval_order:
             center = sampled_frames[idx]
             before = sampled_frames[idx - 1] if idx > 0 else sampled_frames[idx]
-            after = sampled_frames[idx + 1] if idx < len(sampled_frames) - 1 else sampled_frames[idx]
             segment_task_id = f"{task_id}_toast_scan_{idx:04d}"
-            preprocess_summary = "无"
-            preprocess_structured: dict[str, Any] | None = None
-            preprocess_extra_images: list[Path] = []
-            if self.enable_preprocess and self.preprocessor is not None:
-                try:
-                    t_preprocess_start = time.perf_counter()
-                    evidence = self.preprocessor.prepare_toast_triplet(
-                        before_image=before.image_path,
-                        center_image=center.image_path,
-                        after_image=after.image_path,
-                        task_id=task_id,
-                        candidate_index=idx,
-                    )
-                    preprocess_summary = evidence.summary
-                    preprocess_structured = evidence.structured
-                    preprocess_extra_images = evidence.extra_image_paths
-                    preprocess_elapsed_total_ms += (time.perf_counter() - t_preprocess_start) * 1000.0
-                except Exception as exc:  # pylint: disable=broad-except
-                    if self.debug:
-                        self.logger.warning("toast 前处理失败: idx=%s, err=%s", idx, exc)
-
             system_prompt = self.prompt_pack.system_prompt
             user_prompt = render_toast_user_prompt(
                 prompt_pack=self.prompt_pack,
@@ -615,22 +426,17 @@ class ToastMessageDetector:
                     "task_intent": task_intent,
                     "candidate_timestamp_sec": center.timestamp_sec,
                     "keywords_text": keywords_text,
-                    "preprocess_summary": preprocess_summary,
-                    "preprocess_structured_json": json.dumps(
-                        self._compact_preprocess_structured(preprocess_structured),
-                        ensure_ascii=False,
-                    )
-                    if preprocess_structured
-                    else "{}",
                 },
             )
 
             scanned += 1
+            before_preview = _vlm_frame(before.image_path)
+            center_preview = _vlm_frame(center.image_path)
+            t_eval_start = time.perf_counter()
             try:
-                t_eval_start = time.perf_counter()
                 result = self.evaluator.evaluate_json(
-                    before_image=before.image_path,
-                    after_image=center.image_path,
+                    before_image=before_preview,
+                    after_image=center_preview,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     task_id=segment_task_id,
@@ -642,17 +448,33 @@ class ToastMessageDetector:
                         "expectation_met": (bool, type(None)),
                         "reverse_inference_risk": str,
                         "action_evidence_from_frame12": str,
-                        "toast_evidence_from_frame23": str,
+                        "toast_evidence_from_frame2": str,
                         "reason": str,
                     },
-                    extra_image_paths=[after.image_path] + preprocess_extra_images,
-                    image_role_labels=self._build_toast_image_role_labels([after.image_path] + preprocess_extra_images),
+                    image_role_labels=self._build_toast_image_role_labels(),
                 )
-                eval_elapsed_total_ms += (time.perf_counter() - t_eval_start) * 1000.0
             except Exception as exc:  # pylint: disable=broad-except
-                if self.debug:
-                    self.logger.warning("toast 扫描失败: idx=%s, err=%s", idx, exc)
+                eval_elapsed_ms = (time.perf_counter() - t_eval_start) * 1000.0
+                eval_elapsed_total_ms += eval_elapsed_ms
+                vlm_calls.append(
+                    {
+                        "idx": idx,
+                        "timestamp_sec": round(center.timestamp_sec, 3),
+                        "elapsed_ms": round(eval_elapsed_ms, 2),
+                        "ok": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                self.logger.warning(
+                    "toast VLM失败: idx=%s ts=%.2fs elapsed=%.0fms err=%s",
+                    idx,
+                    center.timestamp_sec,
+                    eval_elapsed_ms,
+                    exc,
+                )
                 continue
+            eval_elapsed_ms = (time.perf_counter() - t_eval_start) * 1000.0
+            eval_elapsed_total_ms += eval_elapsed_ms
 
             parsed = result.parsed_json
             confidence = float(parsed["confidence"]) if parsed.get("confidence") is not None else 0.0
@@ -664,15 +486,15 @@ class ToastMessageDetector:
             toast_visible = bool(parsed["toast_visible"])
             reverse_inference_risk = str(parsed.get("reverse_inference_risk", "low")).strip().lower()
             action_evidence_from_frame12 = str(parsed.get("action_evidence_from_frame12", "")).strip()
-            toast_evidence_from_frame23 = str(parsed.get("toast_evidence_from_frame23", "")).strip()
+            toast_evidence_from_frame2 = str(
+                parsed.get("toast_evidence_from_frame2") or parsed.get("toast_evidence_from_frame23", "")
+            ).strip()
             action_semantic_norm = action_semantic.strip().lower()
             expectation_unknown = raw_expectation is None
             if action_semantic_norm in {"unknown", "uncertain", "不确定", "无法确定", "未知"}:
                 expectation_unknown = True
 
             reason = str(parsed.get("reason", ""))
-
-            # 硬门控：未检测到 toast 时，不继续做文案/预期判断，降低结果抖动。
             if not toast_visible:
                 toast_text = ""
                 inferred_expected_toast_text = ""
@@ -686,23 +508,6 @@ class ToastMessageDetector:
             if expectation_unknown:
                 expectation_met = False
 
-            roi_changed_ratio = None
-            if preprocess_structured is not None:
-                try:
-                    roi_changed_ratio = float(preprocess_structured.get("roi_changed_pixel_ratio_center_to_after"))
-                except (TypeError, ValueError):
-                    roi_changed_ratio = None
-            text_norm = self._normalize_toast_text(toast_text)
-            is_cta_like = self._is_likely_cta_text(toast_text)
-            has_status_signal = self._has_failure_signal(text_norm) or self._has_success_signal(text_norm)
-            if toast_visible and roi_changed_ratio is not None and roi_changed_ratio < 0.015 and is_cta_like and not has_status_signal:
-                toast_visible = False
-                expectation_met = False
-                reason = (
-                    f"{reason}（后处理修正：识别文本更像页面CTA且ROI在后续帧几乎不变"
-                    f"(changed_ratio={roi_changed_ratio:.4f})，按非toast处理。）"
-                ).strip()
-
             if expectation_met and (not raw_expectation_met) and semantic_equivalent:
                 reason = f"{reason}（后处理修正：文案非逐字一致，但语义一致，按 expectation_met=true 处理。）".strip()
             if toast_visible and expectation_met and reverse_inference_risk == "high":
@@ -712,6 +517,8 @@ class ToastMessageDetector:
                 ).strip()
             if toast_visible and (not expectation_met) and is_uncertain_action:
                 reason = f"{reason}（后处理修正：动作语义可观测性不足，按不确定处理。）".strip()
+
+            score_item = next((item for item in candidate_scores if int(item.get("index", -1)) == idx), {})
             candidate = {
                 "idx": idx,
                 "frame": center,
@@ -725,20 +532,52 @@ class ToastMessageDetector:
                 "confidence": confidence,
                 "raw_response": result.raw_response,
                 "preprocess_evidence": {
-                    **(preprocess_structured or {}),
+                    "cv_score": score_item.get("score"),
+                    "cv_source": score_item.get("source"),
+                    "hot_mask": score_item.get("hot_mask"),
                     "reverse_inference_risk": reverse_inference_risk,
                     "action_evidence_from_frame12": action_evidence_from_frame12,
-                    "toast_evidence_from_frame23": toast_evidence_from_frame23,
+                    "toast_evidence_from_frame2": toast_evidence_from_frame2,
                 },
             }
-
             evaluated_candidates.append(candidate)
+            vlm_calls.append(
+                {
+                    "idx": idx,
+                    "timestamp_sec": round(center.timestamp_sec, 3),
+                    "elapsed_ms": round(eval_elapsed_ms, 2),
+                    "ok": True,
+                    "toast_visible": toast_visible,
+                    "cv_score": score_item.get("score"),
+                }
+            )
+            self.logger.info(
+                "toast VLM完成: idx=%s ts=%.2fs cv_score=%s elapsed=%.0fms visible=%s uncertain=%s",
+                idx,
+                center.timestamp_sec,
+                score_item.get("score"),
+                eval_elapsed_ms,
+                toast_visible,
+                is_uncertain_action,
+            )
+            if toast_visible and (not is_uncertain_action):
+                break
 
-        self._apply_cross_candidate_conflicts(evaluated_candidates, detector=self, task_id=task_id)
+        self._apply_cross_candidate_conflicts(evaluated_candidates)
         best_candidate = self._select_final_candidate(evaluated_candidates)
+        timing = self._build_detect_timing(
+            detect_start=detect_start,
+            scoring_elapsed_ms=scoring_elapsed_ms,
+            preview_elapsed_ms=preview_elapsed_ms,
+            eval_elapsed_total_ms=eval_elapsed_total_ms,
+            vlm_calls=vlm_calls,
+            frame_count=total_candidates,
+            selected_indices=eval_order,
+            vlm_max_long_edge=self.vlm_max_long_edge,
+        )
+        self._log_detect_timing(timing)
 
         if best_candidate is None:
-            detect_elapsed_ms = (time.perf_counter() - detect_start) * 1000.0
             return ToastDetectionResult(
                 bug_detected=False,
                 expectation_met=False,
@@ -753,14 +592,9 @@ class ToastMessageDetector:
                 raw_response="",
                 scanned_candidates=scanned,
                 total_candidates=total_candidates,
-                evaluated_candidate_indices=candidate_indices,
+                evaluated_candidate_indices=eval_order,
                 candidate_scores=candidate_scores,
-                timing={
-                    "detect_elapsed_ms": round(detect_elapsed_ms, 2),
-                    "scoring_elapsed_ms": round(scoring_elapsed_ms, 2),
-                    "preprocess_elapsed_total_ms": round(preprocess_elapsed_total_ms, 2),
-                    "vlm_eval_elapsed_total_ms": round(eval_elapsed_total_ms, 2),
-                },
+                timing=timing,
                 preprocess_evidence=None,
             )
 
@@ -768,7 +602,6 @@ class ToastMessageDetector:
             bug_detected = (not best_candidate["expectation_met"]) and (not bool(best_candidate.get("is_uncertain_action")))
         else:
             bug_detected = False
-        detect_elapsed_ms = (time.perf_counter() - detect_start) * 1000.0
         return ToastDetectionResult(
             bug_detected=bug_detected,
             expectation_met=best_candidate["expectation_met"],
@@ -783,13 +616,9 @@ class ToastMessageDetector:
             raw_response=best_candidate["raw_response"],
             scanned_candidates=scanned,
             total_candidates=total_candidates,
-            evaluated_candidate_indices=candidate_indices,
+            evaluated_candidate_indices=eval_order,
             candidate_scores=candidate_scores,
-            timing={
-                "detect_elapsed_ms": round(detect_elapsed_ms, 2),
-                "scoring_elapsed_ms": round(scoring_elapsed_ms, 2),
-                "preprocess_elapsed_total_ms": round(preprocess_elapsed_total_ms, 2),
-                "vlm_eval_elapsed_total_ms": round(eval_elapsed_total_ms, 2),
-            },
+            timing=timing,
             preprocess_evidence=best_candidate.get("preprocess_evidence"),
         )
+

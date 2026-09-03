@@ -88,6 +88,60 @@ def test_aggregate_checker_rows_runtime_and_tokens() -> None:
     assert stats["avg_tokens_per_llm_case"] == 120.0
 
 
+def test_print_runtime_summary_lists_per_case_timing(capsys: pytest.CaptureFixture[str]) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    conftest_path = Path(__file__).resolve().parents[1] / "conftest.py"
+    spec = importlib.util.spec_from_file_location("checker_conftest_timing", conftest_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    mod._print_runtime_summary(
+        {
+            "toast": [
+                {
+                    "case_id": "toast_omninote-2-f",
+                    "actual_passed": "失败(Fail)",
+                    "duration_sec": "17.3",
+                    "frame_extract_elapsed_ms": "490",
+                    "scoring_elapsed_ms": "310",
+                    "preview_elapsed_ms": "90",
+                    "vlm_eval_elapsed_ms": "16500",
+                    "detect_elapsed_ms": "17000",
+                    "vlm_call_count": "2",
+                    "vlm_call_details": "idx5=8000ms,idx8=8500ms",
+                    "prompt_call_count": "2",
+                    "prompt_tokens": "2000",
+                    "completion_tokens": "100",
+                    "total_tokens": "2100",
+                },
+                {
+                    "case_id": "toast_feishu-2",
+                    "actual_passed": "通过(Pass)",
+                    "duration_sec": "6.58",
+                    "frame_extract_elapsed_ms": "480",
+                    "scoring_elapsed_ms": "280",
+                    "preview_elapsed_ms": "50",
+                    "vlm_eval_elapsed_ms": "5600",
+                    "detect_elapsed_ms": "5900",
+                    "vlm_call_count": "1",
+                    "vlm_call_details": "idx4=5600ms",
+                    "prompt_call_count": "1",
+                    "prompt_tokens": "2000",
+                    "completion_tokens": "80",
+                    "total_tokens": "2080",
+                },
+            ]
+        }
+    )
+    out = capsys.readouterr().out
+    assert "toast_omninote-2-f" in out
+    assert "idx5=8000ms,idx8=8500ms" in out
+    assert "toast_feishu-2" in out
+
+
 def test_set_checker_report_meta_merges(request: pytest.FixtureRequest) -> None:
     set_checker_report_meta(request, checker="toast", app="x")
     set_checker_report_meta(request, total_tokens=3)

@@ -4,7 +4,9 @@
 该检测依赖 VLM 语义判定，需要通过 .env 或环境变量配置 VLM。
 
 运行：
-  AIChecker/.venv/bin/python -m pytest AIChecker/tests/regression/test_toast_cases.py -q
+  AIChecker/.venv/bin/python -m pytest AIChecker/tests/regression/test_toast_cases.py -q -s --log-cli-level=INFO
+
+`-s --log-cli-level=INFO` 会打印抽帧 / CV / JPEG 预览 / 每次 VLM 的耗时拆分。
 
 外部用例目录（默认 ../TestAgent/testcase/toast）可通过 TESTAGENT_ROOT 覆盖：
   TESTAGENT_ROOT=/Users/xmq/GitHubRepo/TestAgent AIChecker/.venv/bin/python -m pytest ...
@@ -15,6 +17,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -101,8 +104,9 @@ def _build_toast_detector() -> ToastMessageDetector:
         debug=_truthy_env("VGA_DEBUG", "0"),
         preprocessor=preprocessor,
         enable_preprocess=_truthy_env("VGA_ENABLE_PREPROCESS", "1"),
-        top_k_candidates=int(os.getenv("VGA_TOAST_TOP_K_CANDIDATES", "3")),
-        prompt_version=os.getenv("VGA_TOAST_PROMPT_VERSION", "current"),
+        top_k_candidates=int(os.getenv("VGA_TOAST_TOP_K_CANDIDATES", "2")),
+        min_peak_score=float(os.getenv("VGA_TOAST_MIN_PEAK_SCORE", "0.2")),
+        vlm_max_long_edge=int(os.getenv("VGA_TOAST_VLM_MAX_LONG_EDGE", "0")),
     )
 
 
@@ -128,6 +132,8 @@ def test_toast_from_testagent_case(case_json_path: Path, request: pytest.Fixture
     set_checker_report_meta(request, expected_passed=expected_passed)
 
     detector = _build_toast_detector()
+    print(f"[toast] start {case_id}", flush=True)
+    t_extract = time.perf_counter()
     with extract_video_frames(
         video_path=video_path,
         prefix=case_id,
@@ -135,7 +141,12 @@ def test_toast_from_testagent_case(case_json_path: Path, request: pytest.Fixture
         start_sec=float(payload.get("start_sec", 0.0)),
         end_sec=float(payload["end_sec"]) if payload.get("end_sec") is not None else None,
     ) as frames:
+        extract_elapsed_ms = (time.perf_counter() - t_extract) * 1000.0
         assert len(frames) >= 2, f"Need at least 2 frames for {video_path}"
+        print(
+            f"[toast] {case_id} extracted {len(frames)} frames in {extract_elapsed_ms:.0f}ms, detect...",
+            flush=True,
+        )
         result = detector.detect(
             frames,
             task_id=case_id,
@@ -143,12 +154,35 @@ def test_toast_from_testagent_case(case_json_path: Path, request: pytest.Fixture
         )
 
     actual_passed = not bool(result.bug_detected)
+    timing = result.timing or {}
+    logging.getLogger("test_toast").info(
+        "toast 用例耗时: case=%s extract=%.0fms cv=%.0fms preview=%.0fms vlm=%.0fms x%s detect=%.0fms frames=%s",
+        case_id,
+        extract_elapsed_ms,
+        float(timing.get("scoring_elapsed_ms") or 0.0),
+        float(timing.get("preview_elapsed_ms") or 0.0),
+        float(timing.get("vlm_eval_elapsed_total_ms") or 0.0),
+        int(timing.get("vlm_call_count") or 0),
+        float(timing.get("detect_elapsed_ms") or 0.0),
+        len(frames),
+    )
+    vlm_call_details = ",".join(
+        f"idx{item.get('idx')}={item.get('elapsed_ms')}ms"
+        for item in (timing.get("vlm_calls") or [])
+    )
     set_checker_report_meta(
         request,
         actual_passed=actual_passed,
         toast_text=result.toast_text,
         expectation_met=result.expectation_met,
         key_frame_timestamp=result.key_frame_timestamp,
+        detect_elapsed_ms=timing.get("detect_elapsed_ms", ""),
+        frame_extract_elapsed_ms=round(extract_elapsed_ms, 2),
+        scoring_elapsed_ms=timing.get("scoring_elapsed_ms", ""),
+        preview_elapsed_ms=timing.get("preview_elapsed_ms", ""),
+        vlm_eval_elapsed_ms=timing.get("vlm_eval_elapsed_total_ms", ""),
+        vlm_call_count=timing.get("vlm_call_count", ""),
+        vlm_call_details=vlm_call_details,
     )
     record_evaluator_token_usage(request, detector.evaluator)
 

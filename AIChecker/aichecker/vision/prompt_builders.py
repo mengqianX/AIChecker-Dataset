@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable
 
 
@@ -168,31 +166,39 @@ def build_loading_failure_probe_prompt(context: dict[str, Any]) -> PromptPack:
 
 
 def _build_toast_prompt(context: dict[str, Any]) -> PromptPack:
-    """Toast 提示词（代码内置，不依赖外部 JSON 文件）。"""
+    """Toast 提示词（代码内置）。"""
     del context
     task_intent = "检测动作触发后的 toast 文案是否与预期语义一致。"
     system_prompt = (
-        "你是移动端UI测试助手。任务是判断候选时刻是否出现“瞬时toast/snackbar”，并校验其文案语义是否符合动作。"
-        "请严格按顺序执行并遵守时序约束：\n"
-        "1) 先判断 toast_visible；\n"
-        "2) 仅当 toast_visible=true 时再提取 toast_text；\n"
-        "3) action_semantic 只能依据图1(动作前)与图2(候选)推断，禁止根据图3或toast_text反推动作；\n"
-        "4) inferred_expected_toast_text 只能依据 action_semantic 生成，不能直接照搬 toast_text；\n"
-        "5) 若图1与图2仍是同一操作上下文(如同一弹窗/同一表单)，优先判定为该上下文对应动作，不得被图3中的toast语义牵引改判；\n"
-        "6) 若动作属于低可观测手势（如左右滑动条目）且仅靠图1+图2无法稳定判断动作语义，必须输出 action_semantic=\"unknown\"，并将 expectation_met=null、reverse_inference_risk=\"high\"。\n"
-        "固定页面文案、列表内容、标题栏、底部统计不算toast。若 toast_visible=false，必须输出 toast_text=\"\"、inferred_expected_toast_text=\"\"、expectation_met=false。"
-        "请只输出 JSON，不要额外文本。"
-        "JSON 必须包含字段：toast_visible(bool), toast_text(str), action_semantic(str), inferred_expected_toast_text(str), expectation_met(bool|null), reverse_inference_risk(str), action_evidence_from_frame12(str), toast_evidence_from_frame23(str), confidence(number, 0~1), reason(str)。"
-        "其中 reverse_inference_risk 只能是 low 或 high。action_evidence_from_frame12 必须只引用图1和图2可见证据；toast_evidence_from_frame23 只引用图2和图3可见证据。reason 限制为一句话且不超过40个汉字。"
+        "你是移动端UI测试助手。判断候选时刻是否出现 toast/snackbar，并校验其文案是否符合动作。\n"
+        "请严格按顺序执行：\n"
+        "1) 先只根据图1的图标/按钮文案确定 action_semantic，此时还不能看图2，禁止用 toast 用词来命名动作。\n"
+        "2) 再依据步骤1的动作，写出该类操作通常会出现的 inferred_expected_toast_text（成功、失败、已完成、重复操作均可），不能照搬 toast_text。\n"
+        "3) 再看图2有没有 toast/snackbar。没有则 toast_visible=false、toast_text=\"\"、expectation_met=false，结束。"
+        "算toast：短暂出现的操作反馈条（底部 snackbar 含撤销/已回收/已保存，或短暂顶部提示）。"
+        "不算：居中对话框、引导气泡、系统录屏横幅、地图导航指引等页面常驻栏。\n"
+        "4) 若有 toast：toast_visible=true，提取 toast_text。\n"
+        "5) 判断 toast 是否属于步骤1那个动作的反馈：同一操作的不同措辞为 true；toast 说的是另一种操作或另一类对象则为 false。"
+        "不得为了让两边一致而改写 action_semantic。若动作是看了 toast 才定下来的，reverse_inference_risk=\"high\" 且 expectation_met=false。\n"
+        "6) action_semantic=unknown 仅当图1几乎看不出操作；此时 expectation_met=null、reverse_inference_risk=\"high\"。"
+        "图1已有弹窗/表单/结果页时必须写出具体动作，禁止 unknown，reverse_inference_risk=\"low\"。\n"
+        "请只输出 JSON。JSON 必须包含字段：toast_visible(bool), toast_text(str), action_semantic(str), inferred_expected_toast_text(str), "
+        "expectation_met(bool|null), reverse_inference_risk(str), action_evidence_from_frame12(str), toast_evidence_from_frame2(str), "
+        "confidence(number, 0~1), reason(str)。reverse_inference_risk 只能是 low 或 high。"
+        "action_evidence_from_frame12 只引用图1；toast_evidence_from_frame2 只引用图2。reason 一句话且不超过40个汉字。"
     )
     user_prompt = (
         "任务意图：{task_intent}\n"
         "候选帧时间：{candidate_timestamp_sec:.2f}s\n"
         "测试关键词提示（可选）：{keywords_text}\n"
-        "前处理摘要：{preprocess_summary}\n"
-        "前处理证据(JSON, 精简)：{preprocess_structured_json}\n"
-        "请基于三张完整帧判断是否出现toast：图1=动作前完整帧，图2=候选完整帧，图3=候选后完整帧。\n"
-        "关键规则：先由图1+图2确定 action_semantic，再判断图2/图3中的toast是否与该动作匹配；禁止使用图3的toast文本反推动作语义。若动作可观测性不足（典型是滑动手势），请输出 action_semantic=unknown 且 expectation_met=null。"
+        "请基于两张完整帧判断：图1=动作前完整帧，图2=候选完整帧。\n"
+        "关键规则：先根据图1控件本身确定动作和预期 toast，禁止用图2文案反推。"
+        "toast 必须是该动作的反馈；说的是另一种操作则 expectation_met=false。"
+        "再看图2有没有toast；没有则为 false。有则继续核对其文案是否符合预期。"
+        "短暂的底部撤销条/已回收条算toast。"
+        "选择标签等对话框不算toast，但弹窗标题可写进 action_semantic。"
+        "引导气泡、系统录屏横幅、地图导航指引不算toast。"
+        "音量/权限等提示与当前动作无关时，expectation_met=false。"
     )
     return PromptPack(
         selected_prompt_type="toast",
@@ -202,19 +208,9 @@ def _build_toast_prompt(context: dict[str, Any]) -> PromptPack:
     )
 
 
-def build_toast_prompt(
-    prompt_version: str = "current",
-    prompts_dir: Path | None = None,
-    logger: logging.Logger | None = None,
-) -> PromptPack:
-    """构建 toast 提示词（兼容接口，内部使用代码内置模板）。"""
-    del prompt_version, prompts_dir
-    if isinstance(logger, logging.Logger):
-        logger.info("toast prompt loaded: source=inline")
-    return build_prompt_for_type(
-        task_type="toast",
-        context={},
-    )
+def build_toast_prompt(**_kwargs: Any) -> PromptPack:
+    """构建 toast 提示词（代码内置模板）。"""
+    return build_prompt_for_type(task_type="toast", context={})
 
 
 def render_toast_user_prompt(prompt_pack: PromptPack, context: dict[str, Any]) -> str:

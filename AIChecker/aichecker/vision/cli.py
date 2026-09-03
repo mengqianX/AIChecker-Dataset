@@ -394,32 +394,10 @@ def run() -> None:
     log_full_data_url = os.getenv("VGA_LOG_FULL_DATA_URL", "0").strip() in {"1", "true", "True", "YES", "yes"}
     enable_preprocess = os.getenv("VGA_ENABLE_PREPROCESS", "1").strip() in {"1", "true", "True", "YES", "yes"}
     preprocess_max_images = int(os.getenv("VGA_PREPROCESS_MAX_EXTRA_IMAGES", "2"))
-    toast_top_k_candidates = int(os.getenv("VGA_TOAST_TOP_K_CANDIDATES", "3"))
-    toast_prompt_version = os.getenv("VGA_TOAST_PROMPT_VERSION", "current").strip() or "current"
-    toast_min_contour_area = int(os.getenv("VGA_TOAST_MIN_CONTOUR_AREA", "1200"))
-    toast_size_target_ratio = float(os.getenv("VGA_TOAST_SCORE_SIZE_TARGET_RATIO", "0.10"))
-    toast_size_tolerance = float(os.getenv("VGA_TOAST_SCORE_SIZE_TOLERANCE", "0.10"))
-    toast_position_center_ratio = float(os.getenv("VGA_TOAST_SCORE_POSITION_CENTER_RATIO", "0.50"))
-    toast_position_tolerance = float(os.getenv("VGA_TOAST_SCORE_POSITION_TOLERANCE", "0.50"))
-    toast_weight_size = float(os.getenv("VGA_TOAST_SCORE_WEIGHT_SIZE", "0.55"))
-    toast_weight_position = float(os.getenv("VGA_TOAST_SCORE_WEIGHT_POSITION", "0.0"))
-    toast_weight_motion = float(os.getenv("VGA_TOAST_SCORE_WEIGHT_MOTION", "0.45"))
-    toast_motion_norm_ratio = float(os.getenv("VGA_TOAST_SCORE_MOTION_NORM_RATIO", "0.20"))
-    toast_dynamic_penalty_threshold = float(os.getenv("VGA_TOAST_SCORE_DYNAMIC_PENALTY_THRESHOLD", "0.45"))
-    toast_dynamic_penalty_scale = float(os.getenv("VGA_TOAST_SCORE_DYNAMIC_PENALTY_SCALE", "1.2"))
-    toast_dynamic_penalty_max = float(os.getenv("VGA_TOAST_SCORE_DYNAMIC_PENALTY_MAX", "0.55"))
-    toast_candidate_max_area_ratio = float(os.getenv("VGA_TOAST_CANDIDATE_MAX_AREA_RATIO", "0.12"))
-    toast_candidate_max_height_ratio = float(os.getenv("VGA_TOAST_CANDIDATE_MAX_HEIGHT_RATIO", "0.30"))
-    toast_candidate_min_aspect_ratio = float(os.getenv("VGA_TOAST_CANDIDATE_MIN_ASPECT_RATIO", "1.60"))
-    toast_candidate_expand_px = int(os.getenv("VGA_TOAST_CANDIDATE_EXPAND_PX", "10"))
-    toast_candidate_full_width_ratio = float(os.getenv("VGA_TOAST_CANDIDATE_FULL_WIDTH_RATIO", "0.96"))
-    toast_candidate_edge_touch_px = int(os.getenv("VGA_TOAST_CANDIDATE_EDGE_TOUCH_PX", "3"))
-    toast_high_dynamic_threshold = float(os.getenv("VGA_TOAST_HIGH_DYNAMIC_THRESHOLD", "0.20"))
-    toast_band_search_ratio = float(os.getenv("VGA_TOAST_BAND_SEARCH_RATIO", "0.22"))
-    toast_band_min_area_scale = float(os.getenv("VGA_TOAST_BAND_MIN_AREA_SCALE", "0.40"))
-    toast_transition_penalty_threshold = float(os.getenv("VGA_TOAST_TRANSITION_PENALTY_THRESHOLD", "0.08"))
-    toast_transition_penalty_scale = float(os.getenv("VGA_TOAST_TRANSITION_PENALTY_SCALE", "1.5"))
-    toast_transition_penalty_max = float(os.getenv("VGA_TOAST_TRANSITION_PENALTY_MAX", "0.45"))
+    toast_top_k_candidates = int(os.getenv("VGA_TOAST_TOP_K_CANDIDATES", "2"))
+    toast_early_stop_confidence = float(os.getenv("VGA_TOAST_EARLY_STOP_CONFIDENCE", "0.85"))
+    toast_min_peak_score = float(os.getenv("VGA_TOAST_MIN_PEAK_SCORE", "0.2"))
+    toast_vlm_max_long_edge = int(os.getenv("VGA_TOAST_VLM_MAX_LONG_EDGE", "0"))
     loading_failure_probe_top_k = int(os.getenv("VGA_LOADING_FAILURE_PROBE_TOP_K", "5"))
     loading_failure_probe_min_cv_score = float(os.getenv("VGA_LOADING_FAILURE_PROBE_MIN_CV_SCORE", "0.02"))
     loading_failure_probe_force_keep = int(os.getenv("VGA_LOADING_FAILURE_PROBE_FORCE_KEEP", "1"))
@@ -448,30 +426,6 @@ def run() -> None:
         artifact_dir=debug_dir / "preprocess",
         logger=logger,
         max_extra_images=preprocess_max_images,
-        toast_min_contour_area=toast_min_contour_area,
-        toast_size_target_ratio=toast_size_target_ratio,
-        toast_size_tolerance=toast_size_tolerance,
-        toast_position_center_ratio=toast_position_center_ratio,
-        toast_position_tolerance=toast_position_tolerance,
-        toast_weight_size=toast_weight_size,
-        toast_weight_position=toast_weight_position,
-        toast_weight_motion=toast_weight_motion,
-        toast_motion_norm_ratio=toast_motion_norm_ratio,
-        toast_dynamic_penalty_threshold=toast_dynamic_penalty_threshold,
-        toast_dynamic_penalty_scale=toast_dynamic_penalty_scale,
-        toast_dynamic_penalty_max=toast_dynamic_penalty_max,
-        toast_candidate_max_area_ratio=toast_candidate_max_area_ratio,
-        toast_candidate_max_height_ratio=toast_candidate_max_height_ratio,
-        toast_candidate_min_aspect_ratio=toast_candidate_min_aspect_ratio,
-        toast_candidate_expand_px=toast_candidate_expand_px,
-        toast_candidate_full_width_ratio=toast_candidate_full_width_ratio,
-        toast_candidate_edge_touch_px=toast_candidate_edge_touch_px,
-        toast_high_dynamic_threshold=toast_high_dynamic_threshold,
-        toast_band_search_ratio=toast_band_search_ratio,
-        toast_band_min_area_scale=toast_band_min_area_scale,
-        toast_transition_penalty_threshold=toast_transition_penalty_threshold,
-        toast_transition_penalty_scale=toast_transition_penalty_scale,
-        toast_transition_penalty_max=toast_transition_penalty_max,
     )
     count_change_detector = CountChangeDetector(
         evaluator=evaluator,
@@ -494,7 +448,9 @@ def run() -> None:
         preprocessor=preprocessor,
         enable_preprocess=enable_preprocess,
         top_k_candidates=toast_top_k_candidates,
-        prompt_version=toast_prompt_version,
+        early_stop_confidence=toast_early_stop_confidence,
+        min_peak_score=toast_min_peak_score,
+        vlm_max_long_edge=toast_vlm_max_long_edge,
     )
     loading_detector = LoadingDetector(
         evaluator=evaluator,
@@ -536,50 +492,33 @@ def run() -> None:
     logger.info(
         (
             "前处理开关: enable_preprocess=%s, max_extra_images=%s, "
-            "toast_top_k_candidates=%s, toast_prompt_version=%s, "
+            "toast_top_k_candidates=%s, toast_min_peak_score=%.2f, toast_vlm_max_long_edge=%s, "
+            "toast_early_stop_confidence=%.2f, "
             "loading_failure_probe_top_k=%s, loading_failure_probe_min_cv_score=%.4f, loading_failure_probe_force_keep=%s"
         ),
         enable_preprocess,
         preprocess_max_images,
         toast_top_k_candidates,
-        toast_prompt_version,
+        toast_min_peak_score,
+        toast_vlm_max_long_edge,
+        toast_early_stop_confidence,
         loading_failure_probe_top_k,
         loading_failure_probe_min_cv_score,
         loading_failure_probe_force_keep,
     )
     logger.info(
         (
-            "toast打分配置: min_area=%s, size(target=%.3f,tol=%.3f,w=%.3f), "
-            "position(center=%.3f,tol=%.3f,w=%.3f), motion(norm=%.3f,w=%.3f), "
-            "penalty(threshold=%.3f,scale=%.3f,max=%.3f), "
-            "candidate_filter(max_area=%.3f,max_height=%.3f,min_aspect=%.3f,expand_px=%s,full_width=%.3f,edge_px=%s), "
-            "high_dynamic(threshold=%.3f,band_ratio=%.3f,min_area_scale=%.3f), "
-            "transition_penalty(threshold=%.3f,scale=%.3f,max=%.3f)"
+            "toast打分配置: overlay(min_area=%.3f,max_area=%.3f,max_height=%.3f,min_fill=%.3f,max_surround=%.3f), "
+            "hot(min_hits=%s,pair_frac=%.3f,coverage_abort=%.3f)"
         ),
-        toast_min_contour_area,
-        toast_size_target_ratio,
-        toast_size_tolerance,
-        toast_weight_size,
-        toast_position_center_ratio,
-        toast_position_tolerance,
-        toast_weight_position,
-        toast_motion_norm_ratio,
-        toast_weight_motion,
-        toast_dynamic_penalty_threshold,
-        toast_dynamic_penalty_scale,
-        toast_dynamic_penalty_max,
-        toast_candidate_max_area_ratio,
-        toast_candidate_max_height_ratio,
-        toast_candidate_min_aspect_ratio,
-        toast_candidate_expand_px,
-        toast_candidate_full_width_ratio,
-        toast_candidate_edge_touch_px,
-        toast_high_dynamic_threshold,
-        toast_band_search_ratio,
-        toast_band_min_area_scale,
-        toast_transition_penalty_threshold,
-        toast_transition_penalty_scale,
-        toast_transition_penalty_max,
+        preprocessor.toast_min_area_ratio,
+        preprocessor.toast_max_area_ratio,
+        preprocessor.toast_max_height_ratio,
+        preprocessor.toast_min_fill_ratio,
+        preprocessor.toast_max_surround_change,
+        preprocessor.toast_hot_min_hits,
+        preprocessor.toast_hot_pair_fraction,
+        preprocessor.toast_hot_coverage_abort,
     )
     logger.info(
         "抽帧裁剪配置: auto_crop_black_borders=%s, black_threshold=%s, min_nonblack_ratio_per_line=%.4f, min_area_ratio=%.4f",
@@ -753,6 +692,14 @@ def run() -> None:
         frame_extract_elapsed_ms,
         pipeline_elapsed_ms,
     )
+    for segment in segment_results:
+        segment_timing = segment.get("timing")
+        if segment_timing:
+            logger.info(
+                "detector 耗时拆分: detector=%s timing=%s",
+                pipeline_result.selected_detector,
+                segment_timing,
+            )
     logger.info("测试报告已生成: %s", report_path)
 
 

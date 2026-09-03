@@ -59,6 +59,12 @@ RESULT_FIELDNAMES = [
     "completion_tokens",
     "total_tokens",
     "detect_elapsed_ms",
+    "frame_extract_elapsed_ms",
+    "scoring_elapsed_ms",
+    "preview_elapsed_ms",
+    "vlm_eval_elapsed_ms",
+    "vlm_call_count",
+    "vlm_call_details",
     "preview_template_image",
     "preview_target_image",
     "preview_match_result_image",
@@ -245,6 +251,55 @@ def _aggregate_checker_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _avg_ms(rows: List[Dict[str, Any]], key: str) -> float | None:
+    values = [_as_float(row.get(key)) for row in rows]
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _fmt_avg_ms(value: float | None) -> str:
+    return "-" if value is None else f"{value:.0f}"
+
+
+def _fmt_ms_cell(row: Dict[str, Any], key: str) -> str:
+    return _fmt_avg_ms(_as_float(row.get(key)))
+
+
+def _print_per_case_timings(rows: List[Dict[str, Any]]) -> None:
+    timed = [
+        row
+        for row in rows
+        if str(row.get("actual_passed", "")) != "跳过(SKIPPED)"
+        and (
+            _as_float(row.get("detect_elapsed_ms")) is not None
+            or _as_float(row.get("vlm_eval_elapsed_ms")) is not None
+        )
+    ]
+    if not timed:
+        return
+    timed.sort(key=lambda row: _as_float(row.get("duration_sec")) or 0.0, reverse=True)
+    print(
+        f"    {'case':<34} {'wall_s':>7} {'extract':>8} {'cv':>7} "
+        f"{'preview':>8} {'vlm':>8} {'xn':>3} {'detect':>8}  calls"
+    )
+    for row in timed:
+        wall = _as_float(row.get("duration_sec"))
+        wall_txt = "-" if wall is None else f"{wall:.2f}"
+        calls = row.get("vlm_call_count") or "-"
+        details = str(row.get("vlm_call_details") or "").strip() or "-"
+        print(
+            f"    {str(row.get('case_id') or '')[:34]:<34} {wall_txt:>7} "
+            f"{_fmt_ms_cell(row, 'frame_extract_elapsed_ms'):>8} "
+            f"{_fmt_ms_cell(row, 'scoring_elapsed_ms'):>7} "
+            f"{_fmt_ms_cell(row, 'preview_elapsed_ms'):>8} "
+            f"{_fmt_ms_cell(row, 'vlm_eval_elapsed_ms'):>8} "
+            f"{str(calls):>3} "
+            f"{_fmt_ms_cell(row, 'detect_elapsed_ms'):>8}  {details}"
+        )
+
+
 def _print_runtime_summary(by_checker: Dict[str, List[Dict[str, Any]]]) -> None:
     if not by_checker:
         return
@@ -258,7 +313,8 @@ def _print_runtime_summary(by_checker: Dict[str, List[Dict[str, Any]]]) -> None:
     print(header)
     print("-" * len(header))
     for checker in sorted(by_checker):
-        stats = _aggregate_checker_rows(by_checker[checker])
+        checker_rows = by_checker[checker]
+        stats = _aggregate_checker_rows(checker_rows)
         print(
             f"{checker:<22} {stats['case_count']:4d} {stats['executed_count']:4d} "
             f"{stats['skipped_count']:4d} {stats['total_duration_sec']:9.2f} "
@@ -266,6 +322,19 @@ def _print_runtime_summary(by_checker: Dict[str, List[Dict[str, Any]]]) -> None:
             f"{stats['total_prompt_calls']:6d} {stats['total_tokens']:10d} "
             f"{stats['avg_tokens_per_llm_case']:11.1f} {stats['avg_tokens_per_case']:11.1f}"
         )
+        executed = [row for row in checker_rows if str(row.get("actual_passed", "")) != "跳过(SKIPPED)"]
+        extract_avg = _avg_ms(executed, "frame_extract_elapsed_ms")
+        scoring_avg = _avg_ms(executed, "scoring_elapsed_ms")
+        preview_avg = _avg_ms(executed, "preview_elapsed_ms")
+        vlm_avg = _avg_ms(executed, "vlm_eval_elapsed_ms")
+        detect_avg = _avg_ms(executed, "detect_elapsed_ms")
+        if any(value is not None for value in (extract_avg, scoring_avg, preview_avg, vlm_avg, detect_avg)):
+            print(
+                "  timing avg_ms: "
+                f"extract={_fmt_avg_ms(extract_avg)} cv={_fmt_avg_ms(scoring_avg)} "
+                f"preview={_fmt_avg_ms(preview_avg)} vlm={_fmt_avg_ms(vlm_avg)} detect={_fmt_avg_ms(detect_avg)}"
+            )
+            _print_per_case_timings(executed)
     print("=================================================\n")
 
 
@@ -363,6 +432,12 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[Any]):
         "completion_tokens": meta.get("completion_tokens", ""),
         "total_tokens": meta.get("total_tokens", ""),
         "detect_elapsed_ms": meta.get("detect_elapsed_ms", ""),
+        "frame_extract_elapsed_ms": meta.get("frame_extract_elapsed_ms", ""),
+        "scoring_elapsed_ms": meta.get("scoring_elapsed_ms", ""),
+        "preview_elapsed_ms": meta.get("preview_elapsed_ms", ""),
+        "vlm_eval_elapsed_ms": meta.get("vlm_eval_elapsed_ms", ""),
+        "vlm_call_count": meta.get("vlm_call_count", ""),
+        "vlm_call_details": meta.get("vlm_call_details", ""),
         "preview_template_image": meta.get("preview_template_image", ""),
         "preview_target_image": meta.get("preview_target_image", ""),
         "preview_match_result_image": meta.get("preview_match_result_image", ""),
