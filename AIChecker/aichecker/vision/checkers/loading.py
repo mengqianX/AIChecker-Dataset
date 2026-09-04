@@ -260,6 +260,31 @@ class LoadingDetector:
             "white_ratio": white_pixels / total,
         }
 
+    @staticmethod
+    def _is_black_screen_frame(stats: dict[str, Any]) -> bool:
+        return float(stats["black_ratio"]) >= 0.92 and float(stats["std_luma"]) <= 12.0
+
+    @staticmethod
+    def _is_white_screen_frame(stats: dict[str, Any]) -> bool:
+        """
+        近纯白，或内容区白屏叠系统栏/letterbox 黑边。
+
+        后者全帧 std 会被黑边拉高，不能只看 std；但像素几乎只有黑白两极，且白色占主导。
+        """
+        white_ratio = float(stats["white_ratio"])
+        black_ratio = float(stats["black_ratio"])
+        std_luma = float(stats["std_luma"])
+        if white_ratio >= 0.92 and std_luma <= 12.0:
+            return True
+        return white_ratio >= 0.70 and (white_ratio + black_ratio) >= 0.95 and white_ratio > black_ratio
+
+    @staticmethod
+    def _is_chrome_white_frame(stats: dict[str, Any]) -> bool:
+        """内容区近白、仍留有明显深色系统栏/letterbox。用于捕获非末尾的一帧内容白屏。"""
+        white_ratio = float(stats["white_ratio"])
+        black_ratio = float(stats["black_ratio"])
+        return white_ratio >= 0.70 and black_ratio >= 0.10 and (white_ratio + black_ratio) >= 0.95
+
     def _calc_garbled_screen_stats(self, gray: Any) -> dict[str, float | bool]:
         """
         识别局部花屏/乱码：文本带内多行同时高方差，且水平边缘密度异常偏低。
@@ -431,67 +456,77 @@ class LoadingDetector:
 
     def _detect_black_white_screen(self, sampled_frames: list[Any]) -> tuple[str | None, str, dict[str, Any]]:
         """
-        识别黑/白屏与花屏异常。黑/白屏只在末尾窗口持续命中时判定；花屏扫描全段帧并要求连续命中。
+        识别黑/白屏与花屏异常。
+
+        黑/白屏：全段连续命中（含非末尾的持续白屏），或单帧内容白屏+深色系统栏。
+        花屏：扫描全段帧并要求连续命中（局部块状花屏允许单帧）。
         """
+        required_consecutive = min(len(sampled_frames), self.cv_black_white_min_consecutive)
         tail_window = min(len(sampled_frames), self.cv_black_white_tail_window)
-        required_consecutive = min(tail_window, self.cv_black_white_min_consecutive)
-        tail_frames = sampled_frames[-tail_window:]
         frame_stats: list[dict[str, Any]] = []
 
-        for frame_idx, frame in enumerate(tail_frames, start=len(sampled_frames) - tail_window):
+        for frame_idx, frame in enumerate(sampled_frames):
             gray = self._read_gray_image(frame.image_path)
             stats = self._calc_screen_stats(gray)
-            black_match = float(stats["black_ratio"]) >= 0.92 and float(stats["std_luma"]) <= 12.0
-            white_match = float(stats["white_ratio"]) >= 0.92 and float(stats["std_luma"]) <= 12.0
+            black_match = self._is_black_screen_frame(stats)
+            white_match = self._is_white_screen_frame(stats)
+            chrome_white_match = self._is_chrome_white_frame(stats)
             frame_stats.append(
                 {
                     "frame_index": frame_idx,
                     "timestamp_sec": float(getattr(frame, "timestamp_sec", 0.0)),
                     "black_match": black_match,
                     "white_match": white_match,
+                    "chrome_white_match": chrome_white_match,
                     **stats,
                 }
             )
 
+        tail_stats = frame_stats[-tail_window:] if frame_stats else []
+
         def _terminal_run_count(key: str) -> int:
             count = 0
-            for item in reversed(frame_stats):
+            for item in reversed(tail_stats):
                 if bool(item[key]):
                     count += 1
                 else:
                     break
             return count
 
-        black_count = sum(1 for item in frame_stats if bool(item["black_match"]))
-        white_count = sum(1 for item in frame_stats if bool(item["white_match"]))
+        black_flags = [bool(item["black_match"]) for item in frame_stats]
+        white_flags = [bool(item["white_match"]) for item in frame_stats]
+        black_count = sum(1 for flag in black_flags if flag)
+        white_count = sum(1 for flag in white_flags if flag)
+        black_max_consecutive = self._max_consecutive_true(black_flags)
+        white_max_consecutive = self._max_consecutive_true(white_flags)
+        chrome_white_count = sum(1 for item in frame_stats if bool(item["chrome_white_match"]))
         black_terminal_run = _terminal_run_count("black_match")
         white_terminal_run = _terminal_run_count("white_match")
-        black_window_ratio = black_count / max(1, tail_window)
-        white_window_ratio = white_count / max(1, tail_window)
+        black_window_ratio = sum(1 for item in tail_stats if item["black_match"]) / max(1, tail_window)
+        white_window_ratio = sum(1 for item in tail_stats if item["white_match"]) / max(1, tail_window)
         metrics: dict[str, Any] = {
             "tail_window": tail_window,
             "required_consecutive": required_consecutive,
             "required_window_ratio": self.cv_black_white_min_window_ratio,
             "black_match_count": black_count,
             "white_match_count": white_count,
+            "black_max_consecutive": black_max_consecutive,
+            "white_max_consecutive": white_max_consecutive,
+            "chrome_white_count": chrome_white_count,
             "black_terminal_run": black_terminal_run,
             "white_terminal_run": white_terminal_run,
             "black_window_ratio": black_window_ratio,
             "white_window_ratio": white_window_ratio,
             "last_frame": frame_stats[-1] if frame_stats else {},
-            "tail_frames": frame_stats,
+            "tail_frames": tail_stats,
         }
 
-        if (
-            black_terminal_run >= required_consecutive
-            and black_window_ratio >= self.cv_black_white_min_window_ratio
-        ):
-            return "black_screen", "CV判定末尾窗口持续为近纯黑画面，疑似黑屏异常。", metrics
-        if (
-            white_terminal_run >= required_consecutive
-            and white_window_ratio >= self.cv_black_white_min_window_ratio
-        ):
-            return "white_screen", "CV判定末尾窗口持续为近纯白画面，疑似白屏异常。", metrics
+        if black_max_consecutive >= required_consecutive:
+            return "black_screen", "CV判定出现持续近纯黑画面，疑似黑屏异常。", metrics
+        if white_max_consecutive >= required_consecutive:
+            return "white_screen", "CV判定出现持续近纯白画面，疑似白屏异常。", metrics
+        if chrome_white_count >= 1:
+            return "white_screen", "CV判定内容区近白且保留深色系统栏，疑似内容白屏异常。", metrics
 
         garbled_frame_stats: list[dict[str, Any]] = []
         garbled_flags: list[bool] = []
