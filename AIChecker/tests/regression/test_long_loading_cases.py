@@ -1,5 +1,5 @@
 """
-基于 TestAgent/testcase/long_loading 的用例，验证 AIChecker LoadingDetector 的长时间加载检测。
+基于 testcase/long_loading 的用例，验证 AIChecker LoadingDetector 的长时间加载检测。
 
 CV 明确时只走帧间变化信号；CV 不确定时会回退到真实 VLM。
 需要通过 .env 或环境变量配置 VLM。

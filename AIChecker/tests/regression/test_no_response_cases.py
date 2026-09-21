@@ -1,5 +1,5 @@
 """
-基于 TestAgent/testcase/no_response 的用例，验证 AIChecker LoadingDetector 的无响应检测。
+基于 testcase/no_response 的用例，验证 AIChecker LoadingDetector 的无响应检测。
 
 策略（CV 先定、VLM 兜底；no_response 与 long_loading 分离）：
 1. 先对 ROI/全帧做纯 CV（不调用 VLM）

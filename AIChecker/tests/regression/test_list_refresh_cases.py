@@ -1,16 +1,15 @@
 """
-基于 TestAgent/testcase/content_list_refresh 的用例，验证 AIChecker ListRefreshDetector。
+基于 testcase/content_list_refresh 的用例，验证 AIChecker ListRefreshDetector。
 
 该检测依赖 VLM 语义判定，需要通过 .env 或环境变量配置 VLM。
 
 运行：
   AIChecker/.venv/bin/python -m pytest AIChecker/tests/regression/test_list_refresh_cases.py -q
 
-外部用例目录（默认 ../TestAgent/testcase/content_list_refresh）可通过 TESTAGENT_ROOT 覆盖：
-  TESTAGENT_ROOT=/Users/xmq/GitHubRepo/TestAgent AIChecker/.venv/bin/python -m pytest ...
+用例目录默认本仓库 testcase/content_list_refresh；可通过 TESTAGENT_ROOT 覆盖根目录。
 
 说明：
-  TestAgent 用例中的 bounds 多为触发控件（Tab/筛选按钮），而当前 AIChecker
+  用例中的 bounds 多为触发控件（Tab/筛选按钮），而当前 AIChecker
   list_refresh 的 target_bounds 语义是“列表内容 ROI”。
   因此默认不把 case.bounds 当作列表 ROI；若未提供 target_region_bounds，
   则传 target_bounds=None，由检测器退化为主内容区域。

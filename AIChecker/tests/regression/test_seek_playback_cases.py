@@ -1,10 +1,10 @@
 """
-基于 TestAgent/testcase/video_peek 的用例，验证 AIChecker SeekPlaybackDetector。
+基于 testcase/video_peek 的用例，验证 AIChecker SeekPlaybackDetector。
 
 运行：
   AIChecker/.venv/bin/python -m pytest AIChecker/tests/regression/test_seek_playback_cases.py -q
 
-外部用例目录（默认 ../TestAgent/testcase/video_peek）可通过 TESTAGENT_ROOT 覆盖。
+用例目录默认本仓库 testcase/video_peek；可通过 TESTAGENT_ROOT 覆盖根目录。
 """
 from __future__ import annotations
 

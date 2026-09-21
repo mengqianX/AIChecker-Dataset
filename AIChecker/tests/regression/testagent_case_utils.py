@@ -1,4 +1,4 @@
-"""TestAgent testcase 回归测试的共享工具。"""
+"""本仓库 testcase/ 回归测试的共享工具。"""
 from __future__ import annotations
 
 import json
@@ -16,7 +16,7 @@ from aichecker.vision.perception import ExtractedFrame, FrameExtractor
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 PROJECT_ROOT = REPO_ROOT / "AIChecker"
-TESTAGENT_ROOT = Path(os.getenv("TESTAGENT_ROOT", str(REPO_ROOT.parent / "TestAgent"))).resolve()
+TESTAGENT_ROOT = Path(os.getenv("TESTAGENT_ROOT", str(REPO_ROOT))).resolve()
 
 
 class _NoVlmEvaluator:
@@ -145,7 +145,7 @@ def extract_video_frames(
 
 def require_testagent_root() -> None:
     if not TESTAGENT_ROOT.exists():
-        pytest.skip(f"TestAgent root not found: {TESTAGENT_ROOT}")
+        pytest.skip(f"testcase root not found: {TESTAGENT_ROOT}")
 
 
 def no_vlm_evaluator() -> _NoVlmEvaluator:

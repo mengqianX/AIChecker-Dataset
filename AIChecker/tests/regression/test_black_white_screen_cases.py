@@ -1,9 +1,8 @@
 """
-基于 TestAgent/testcase/black_white_screen 目录的测试用例，
+基于 testcase/black_white_screen 目录的测试用例，
 验证 AIChecker aichecker.vision.checkers.loading 的黑白屏/花屏检测能力。
 
-JSON 与视频放在 TestAgent 仓库；检测逻辑在本仓库 AIChecker 内执行。
-默认读取同级目录 ../TestAgent，可通过环境变量 TESTAGENT_ROOT 覆盖。
+JSON 与视频默认在本仓库 testcase/；可通过环境变量 TESTAGENT_ROOT 覆盖根目录。
 
 运行示例：
   AIChecker/.venv/bin/python -m pytest AIChecker/tests/regression/test_black_white_screen_cases.py -q

@@ -1,5 +1,5 @@
 """
-基于 TestAgent/testcase/toast 的用例，验证 AIChecker ToastMessageDetector。
+基于 testcase/toast 的用例，验证 AIChecker ToastMessageDetector。
 
 该检测依赖 VLM 语义判定，需要通过 .env 或环境变量配置 VLM。
 
@@ -8,8 +8,7 @@
 
 `-s --log-cli-level=INFO` 会打印抽帧 / CV / JPEG 预览 / 每次 VLM 的耗时拆分。
 
-外部用例目录（默认 ../TestAgent/testcase/toast）可通过 TESTAGENT_ROOT 覆盖：
-  TESTAGENT_ROOT=/Users/xmq/GitHubRepo/TestAgent AIChecker/.venv/bin/python -m pytest ...
+用例目录默认本仓库 testcase/toast；可通过 TESTAGENT_ROOT 覆盖根目录。
 """
 from __future__ import annotations
 

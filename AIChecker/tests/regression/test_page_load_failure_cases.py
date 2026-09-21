@@ -1,5 +1,5 @@
 """
-基于 TestAgent/testcase/page_load_failure 的用例，验证 AIChecker LoadFailurePromptDetector。
+基于 testcase/page_load_failure 的用例，验证 AIChecker LoadFailurePromptDetector。
 
 该检测依赖 VLM 语义探测，需要通过 .env 或环境变量配置 VLM。
 
