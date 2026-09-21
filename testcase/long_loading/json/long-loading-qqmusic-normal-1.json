@@ -1,0 +1,10 @@
+{
+  "task_id": "long-loading-qqmusic-normal-1",
+  "mode": "targeted",
+  "task_type": "loading",
+  "video_file": "../normal/long-load-qqmusic-normal-1.mp4",
+  "sample_interval_sec": 1.0,
+  "start_sec": 0.0,
+  "bounds": [78, 342, 309, 541],
+  "expected_passed": true
+}
