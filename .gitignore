@@ -46,7 +46,7 @@ AIChecker/tests/screens/
 AIChecker/tests/jsons/
 AIChecker/tests/image_match_output/
 reports/
-testcase/
+# testcase/
 
 # 文档目录（不提交）
 AIChecker/docs/
@@ -86,4 +86,6 @@ AIChecker/aichecker/tests/regression/test_image_match_ocr_accuracy.py
 
 *.docx
 *.md
+.codex-build/
+.codex-finalizer/
 
