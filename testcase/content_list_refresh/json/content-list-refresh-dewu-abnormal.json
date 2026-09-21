@@ -1,0 +1,11 @@
+{
+  "task_id": "content-list-refresh-dewu-abnormal",
+  "mode": "targeted",
+  "task_type": "list_refresh",
+  "screenshot_a": "../abnormal/content-list-refresh-dewu-abnormal-before.png",
+  "screenshot_b": "../abnormal/content-list-refresh-dewu-abnormal-after.png",
+  "sample_interval_sec": 1.0,
+  "start_sec": 0.0,
+  "bounds": [342, 252, 486, 384],
+  "expected_passed": false
+}
